@@ -819,12 +819,8 @@ for yaml_fn in `ls [0-9]*.yaml | sort -n`; do
     fi
 done
 
-if [ "$need_upgrade" != "y" ];then
-    # Skip pod checking due to federatorai-operator with advanced version may cause some pods keep crashing (Jira FA-597)
-    # So we delay pod checking until alamedaservice is patched.
-    wait_until_pods_ready $max_wait_pods_ready_time 30 $install_namespace 1
-    echo -e "\n$(tput setaf 6)Install Federator.ai operator $tag_number successfully$(tput sgr 0)"
-fi
+wait_until_pods_ready $max_wait_pods_ready_time 30 $install_namespace 1
+echo -e "\n$(tput setaf 6)Install Federator.ai operator $tag_number successfully$(tput sgr 0)"
 
 alamedaservice_example="alamedaservice_sample.yaml"
 if [ "$offline_mode_enabled" != "y" ]; then
