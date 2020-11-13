@@ -412,15 +412,8 @@ get_datadog_agent_info()
     fi
     dd_api_key="`kubectl get secret -n $dd_namespace $dd_api_secret_name -o jsonpath='{.data.api-key}'`"
     dd_app_key="`kubectl get secret -n $dd_namespace -o jsonpath='{range .items[*]}{.data.app-key}'`"
-    # Search kube_cluster:$cluster_name key pair
-    for i in $(kubectl describe ds -n $dd_namespace|grep "DD_TAG"|tr " " "\\n")
-    do
-        value=$(echo "$i"|grep "^kube_cluster"|cut -d ":" -f2)
-        if [ "$value" != "" ]; then
-            dd_cluster_name="$value"
-            break
-        fi
-    done
+    dd_cluster_agent_deploy_name="$(kubectl get deploy -n $dd_namespace|grep -v NAME|awk '{print $1}'|grep "cluster-agent$")"
+    dd_cluster_name="$(kubectl get deploy $dd_cluster_agent_deploy_name -n $dd_namespace 2>/dev/null -o jsonpath='{range .spec.template.spec.containers[*]}{.env[?(@.name=="DD_CLUSTER_NAME")].value}')"
 }
 
 display_cluster_scaler_file_location()
@@ -456,8 +449,15 @@ __EOF__
     # Get Datadog agent info (User configuration)
     get_datadog_agent_info
 
+    if [ "$dd_cluster_agent_deploy_name" = "" ]; then
+        echo -e "\n$(tput setaf 1)Error! Failed to auto-discover Datadog cluster agent deployment.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Datadog cluster agent needs to be installed to make WPA/HPA work properly.$(tput sgr 0)"
+        display_cluster_scaler_file_location
+        return
+    fi
+
     if [ "$dd_cluster_name" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! Failed to auto-discover DD_TAGS value (kube_cluster:\$cluster_name) in Datadog DaemonSet env variable.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! Failed to auto-discover DD_CLUSTER_NAME value in Datadog cluster agent env variable.$(tput sgr 0)"
         echo -e "\n$(tput setaf 1)Please help to set up cluster name accordingly.$(tput sgr 0)"
         display_cluster_scaler_file_location
         return
@@ -496,7 +496,7 @@ __EOF__
         return
     fi
 
-    echo -e "$(tput setaf 3)Use \"$dd_cluster_name\" as the cluster name and DD_TAGS$(tput sgr 0)"
+    echo -e "$(tput setaf 3)Use \"$dd_cluster_name\" as the cluster name and DD_CLUSTER_NAME$(tput sgr 0)"
     sed -i "s|\bclusterName:.*|clusterName: ${dd_cluster_name}|g" $alamedascaler_cluster_filename
 
     echo "Applying file $alamedascaler_cluster_filename ..."
@@ -771,7 +771,7 @@ sed -i "s/name: federatorai/name: ${install_namespace}/g" 00*.yaml
 sed -i "s/namespace: federatorai/namespace: ${install_namespace}/g" 01*.yaml 03*.yaml 05*.yaml 06*.yaml 07*.yaml
 
 if [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ]; then
-    sed -i -e "/image: /a\          resources:\n            limits:\n              cpu: 1000m\n              memory: 2000Mi\n            requests:\n              cpu: 100m\n              memory: 100Mi" `ls 03*.yaml`
+    sed -i -e "/image: /a\          resources:\n            limits:\n              cpu: 4000m\n              memory: 8000Mi\n            requests:\n              cpu: 100m\n              memory: 100Mi" `ls 03*.yaml`
 fi
 
 echo -e "\n$(tput setaf 2)Applying Federator.ai operator yaml files...$(tput sgr 0)"
@@ -1027,8 +1027,8 @@ __EOF__
         cat >> ${alamedaservice_example} << __EOF__
   resources:
     limits:
-      cpu: 1000m
-      memory: 2000Mi
+      cpu: 4000m
+      memory: 8000Mi
     requests:
       cpu: 100m
       memory: 100Mi
@@ -1036,15 +1036,12 @@ __EOF__
     resources:
       limits:
         cpu: 8000m
-        memory: 2000Mi
+        memory: 8000Mi
       requests:
         cpu: 2000m
-        memory: 1000Mi
+        memory: 500Mi
   alamedaDatahub:
     resources:
-      limits:
-        cpu: 2000m
-        memory: 2000Mi
       requests:
         cpu: 100m
         memory: 500Mi
@@ -1063,19 +1060,6 @@ __EOF__
       requests:
         cpu: 100m
         memory: 250Mi
-  alamedaRecommender:
-    resources:
-      limits:
-        cpu: 2000m
-        memory: 2000Mi
-  federatoraiDataAdapter:
-    resources:
-      limits:
-        cpu: 4000m
-        memory: 2000Mi
-      requests:
-        cpu: 200m
-        memory: 100Mi
   federatoraiRest:
     resources:
       requests:
@@ -1087,9 +1071,6 @@ __EOF__
         cat >> ${alamedaservice_example} << __EOF__
   alamedaInfluxdb:
     resources:
-      limits:
-        cpu: 2000m
-        memory: 4000Mi
       requests:
         cpu: 500m
         memory: 500Mi
@@ -1103,9 +1084,6 @@ __EOF__
         cat >> ${alamedaservice_example} << __EOF__
   alamedaInfluxdb:
     resources:
-      limits:
-        cpu: 2000m
-        memory: 4000Mi
       requests:
         cpu: 500m
         memory: 500Mi

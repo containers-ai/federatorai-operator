@@ -827,15 +827,8 @@ get_datadog_agent_info()
     fi
     dd_api_key="`kubectl get secret -n $dd_namespace $dd_api_secret_name -o jsonpath='{.data.api-key}'`"
     dd_app_key="`kubectl get secret -n $dd_namespace -o jsonpath='{range .items[*]}{.data.app-key}'`"
-    # Search kube_cluster:$cluster_name key pair
-    for i in $(kubectl describe ds -n default|grep "DD_TAG"|tr " " "\\n")
-    do
-        value=$(echo "$i"|grep "^kube_cluster"|cut -d ":" -f2)
-        if [ "$value" != "" ]; then
-            dd_cluster_name="$value"
-            break
-        fi
-    done
+    dd_cluster_agent_deploy_name="$(kubectl get deploy -n $dd_namespace |grep -v NAME|awk '{print $1}'|grep "cluster-agent$")"
+    dd_cluster_name="$(kubectl get deploy $dd_cluster_agent_deploy_name -n $dd_namespace 2>/dev/null -o jsonpath='{range .spec.template.spec.containers[*]}{.env[?(@.name=="DD_CLUSTER_NAME")].value}')"
 }
 
 add_dd_tags_to_executor_env()
@@ -1324,7 +1317,7 @@ echo "Receiving command '$0 $@'" >> $debug_log
 if [ "$install_nginx" != "y" -a "$remove_nginx" != "y" ]; then
     get_datadog_agent_info
     if [ "$dd_cluster_name" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! Failed to auto-discover DD_TAGS value (kube_cluster:\$cluster_name) in Datadog DaemonSet env variable.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! Failed to auto-discover DD_CLUSTER_NAME value in Datadog cluster agent env variable.$(tput sgr 0)"
         echo -e "\n$(tput setaf 1)Please help to set up cluster name accordingly.$(tput sgr 0)"
         exit
     else

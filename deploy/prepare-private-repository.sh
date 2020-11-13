@@ -77,7 +77,7 @@ pull_operation()
 push_operation()
 {
     for image in ${image_list}; do
-        file_name="`ls *.tgz|grep -E "$image\.[v][[:digit:]]+\.[[:digit:]]+\.[[:alnum:]]+\."`"
+        file_name="`ls *.tgz|grep -E "$image\.[v][[:digit:]]+\.[[:digit:]]+\.[0-9a-z\-]+\."`"
         if [ "$file_name" = "" ]; then
             echo -e "\n$(tput setaf 1)Error! Failed to find \"$image.<tag>.tgz\" file name in $PWD.$(tput sgr 0)"
             exit 3
@@ -185,7 +185,7 @@ check_build_tag()
         show_usage
     fi
 
-    if [[ ! $build_tag =~ ^[v][[:digit:]]+\.[[:digit:]]+\.[[:alnum:]]+$ ]]; then
+    if [[ ! $build_tag =~ ^[v][[:digit:]]+\.[[:digit:]]+\.[0-9a-z\-]+$ ]]; then
         echo -e "\n$(tput setaf 1)Error! The tag should follow the correct format (e.g., v4.2.755) $(tput sgr 0)"
         show_usage
     fi
