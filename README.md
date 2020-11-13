@@ -54,7 +54,7 @@ There are two types of environment variable that Federatorai-Operator accepts
 
 #### Setting Configuration File
 
-See the example [file](./etc/operator.yml). Assign the configuration file path when running Federatorai-Operator with flag **--config**.
+See the example [file](./etc/operator.toml). Assign the configuration file path when running Federatorai-Operator with flag **--config**.
 ```
 $FEDERATORAI_OPERATOR_BIN --config $CONFIGURATION_FILE_PATH
 ```

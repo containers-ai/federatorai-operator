@@ -1,0 +1,36 @@
+apiVersion: federatorai.containers.ai/v1alpha1
+kind: AlamedaService
+metadata:
+  name: my-alamedaservice
+  namespace: federatorai
+spec:
+  kafka:
+    brokerAddresses:
+    # - broker1:9092
+    # - broker2:9092
+    version: # 2.4.0
+    sasl:
+      enabled: false
+      username: ""
+      password: ""
+    tls:
+      enabled: false
+      insecureSkipVerify: true
+  keycode:
+    codeNumber: D3JXN-LIFTQ-KQEZ3-WZBNI-DA3WZ-A7HKQ
+  autoPatchPrometheusRules: true ## patch prometheus rules automatically
+  selfDriving: false             ## to enable resource self-orchestration of the deployed Alameda components
+                                ## it is recommended NOT to use ephemeral data storage for Alameda influxdb component when self-Driving is enabled
+  enableExecution: true
+  enableGui: false
+  version: latest               ## for Alameda components. (exclude grafana and influxdb)
+  prometheusService: https://prometheus-k8s.openshift-monitoring:9091
+  storages:                     ## see following details for where it is used in each component
+    - usage: log                ## storage setting for log
+      type: ephemeral           ## ephemeral means emptyDir{}
+    - usage: data
+      type: ephemeral
+#    - usage: data               ## storage setting for data
+#      type: pvc                 ## pvc means PersistentVolumeClaim
+#      size: 10Gi                ## mandatory when type=pvc
+#      class: "normal"           ## mandatory when type=pvc
