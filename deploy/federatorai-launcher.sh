@@ -44,8 +44,19 @@ get_build_tag()
         fi
     done
 
-    branch="`echo $tag_number| rev|cut -d"." -f2-|rev`"
-    patch_num="`echo $tag_number|awk -F"." '{print $NF}'`"
+    full_tag=$(echo "$tag_number"|cut -d '-' -f1)           # Delete - and after
+    tag_first_digit=${full_tag%%.*}                         # Delete first dot and what follows.
+    tag_last_digit=${full_tag##*.}                          # Delete up to last dot.
+    tag_middle_digit=${full_tag##$tag_first_digit.}         # Delete first number and dot.
+    tag_middle_digit=${tag_middle_digit%%.$tag_last_digit}  # Delete dot and last number.
+    tag_first_digit=$(echo $tag_first_digit|cut -d 'v' -f2) # Delete v
+
+    if [ "$tag_first_digit" -ge "4" ] && [ "$tag_middle_digit" -ge "4" ]; then
+        # >= 4.4
+        echo -e "\n$(tput setaf 1)Abort! Please use new federatorai-launcher.sh for version tag v4.4.x or later.$(tput sgr 0)"
+        echo -e "$(tput setaf 3)curl https://raw.githubusercontent.com/containers-ai/prophetstor/master/deploy/federatorai-launcher.sh | bash $(tput sgr 0)"
+        exit 3
+    fi
 
     file_folder="/tmp/federatorai-scripts/${tag_number}"
     rm -rf $file_folder
@@ -121,21 +132,19 @@ done
 download_files()
 {
     scriptarray=("install.sh" "email-notifier-setup.sh" "node-label-assignor.sh" "planning-util.sh" "preloader-util.sh" "prepare-private-repository.sh" "uninstall.sh")
-    if [ "$branch" = "v4.3" ]; then
+    if [ "$tag_first_digit" -ge "4" ] && [ "$tag_middle_digit" -ge "3" ]; then
+        # >= 4.3
         scriptarray=("${scriptarray[@]}" "federatorai-setup-for-datadog.sh")
     fi
 
-    # TODO: Need to refine this rule once 4.3.datadog (4.3.1 br) will replace 4.3.datadog (4.3 br)
-    re='^[0-9]+$'
-    # patch_num contains only number
-    if [[ $patch_num =~ $re ]] ; then
-        # 4.3-husky-post
-        if [ "$branch" = "v4.3" ] && [ "$patch_num" -gt "1006" ]; then
+    if [ "$tag_first_digit" -ge "4" ] && [ "$tag_middle_digit" -ge "4" ]; then
+        # >= 4.4
+        scriptarray=("${scriptarray[@]}" "cluster-property-setup.sh")
+    elif [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "3" ]; then
+        if [ "$tag_last_digit" -gt "1006" ] || [ "$tag_last_digit" = "datadog" ]; then
+            # (= 4.3 and > 1006) or (= 4.3 and = datadog)
             scriptarray=("${scriptarray[@]}" "cluster-property-setup.sh")
         fi
-    # check if patch_num is datadog-*
-    elif [ "$branch" = "v4.3" ] && [[ $patch_num =~ ^datadog-[[:alnum:]]+$ ]]; then
-        scriptarray=("${scriptarray[@]}" "cluster-property-setup.sh")
     fi
 
     mkdir -p $scripts_folder
@@ -159,7 +168,7 @@ download_files()
 
     alamedaservice_example="alamedaservice_sample.yaml"
     yamlarray=( "alamedadetection.yaml" "alamedanotificationchannel.yaml" "alamedanotificationtopic.yaml" )
-    if [ "$branch" = "v4.2" ]; then
+    if [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "2" ]; then
         yamlarray=("${yamlarray[@]}" "alamedascaler.yaml")
     fi
 
@@ -181,7 +190,7 @@ download_files()
         fi
     done
 
-    if [ "$branch" = "v4.3" ] || [ "$branch" = "v4.5" ]; then
+    if [ "$tag_first_digit" -ge "4" ] && [ "$tag_middle_digit" -ge "3" ]; then
         # Three kinds of alamedascaler
         alamedascaler_filename="alamedascaler.yaml"
         src_pool=( "kafka" "nginx" "redis" )
@@ -247,12 +256,11 @@ go_interactive()
         ask_push_image
         if [ "$push_image" = "y" ]; then
             old_build="n"
-            re='^[0-9]+$'
-            if [[ $patch_num =~ $re ]] ; then
-                if [ "$branch" = "v4.2" ] && [ "$patch_num" -lt "759" ]; then
-                    old_build="y"
-                fi
+            if [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "2" ] && [ "$tag_last_digit" -lt "759" ]; then
+                # < 4.2.759
+                old_build="y"
             fi
+
             if [ "$old_build" = "n" ]; then
                 if [ "$source_repo_url" != "" ]; then
                     bash $scripts_folder/prepare-private-repository.sh --pull --tag $tag_number --push --repo-url $repo_url --source-repo-url $source_repo_url
@@ -291,12 +299,10 @@ prepare_media()
     mkdir -p $image_folder
     cd $image_folder
 
-    re='^[0-9]+$'
-    if [[ $patch_num =~ $re ]] ; then
-        if [ "$branch" = "v4.2" ] && [ "$patch_num" -lt "759" ]; then
-            echo -e "\n$(tput setaf 1)Abort, --prepare_media only support build version greater than v4.2.758$(tput sgr 0)"
-            exit 3
-        fi
+    if [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "2" ] && [ "$tag_last_digit" -lt "759" ]; then
+        # < 4.2.759
+        echo -e "\n$(tput setaf 1)Abort, --prepare_media only support build version greater than v4.2.758$(tput sgr 0)"
+        exit 3
     fi
 
     if [ "$source_repo_url" != "" ]; then
