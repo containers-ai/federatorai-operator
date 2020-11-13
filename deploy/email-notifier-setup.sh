@@ -76,12 +76,12 @@ webhook_validation_checker()
     crname=$1
     yamlfile=$2
     if [ ! -f ${yamlfile} ]; then
-        echo "testing yaml file ${yamlfile} is not existing!"
+        echo "Error! Test yaml file ${yamlfile} doesn't exist."
         return 2
     fi
     sed -i 's/port: 0/port: 1/g' ${yamlfile}
 
-    echo "Doing webhook validation test..."
+    echo "Doing the webhook validation test..."
     kubectl apply -f ${yamlfile}
     if [ "$?" -ne "0" ]; then
         echo -e "$(tput setaf 1)Failed to apply webhook validation testing CR$(tput sgr 0)"
@@ -102,7 +102,7 @@ webhook_validation_checker()
 
 kubectl version|grep -q "^Server"
 if [ "$?" != "0" ];then
-    echo -e "\nPlease login to kubernetes first."
+    echo -e "\nPlease login to Kubernetes first."
     exit
 fi
 
@@ -127,7 +127,7 @@ rm -f ${test_yaml_file} > /dev/null 2>&1
 # display hint if needed
 if [ "${ret_mutation}" -ne "0" ] || [ "${ret_validation}" -ne "0" ]; then
     webhook_reminder
-    echo -e "\nPlease set up webhook before executing this script."
+    echo -e "\nPlease set up the webhook before executing this script."
     exit
 fi
 
@@ -226,19 +226,19 @@ sed -i "/cc:/ s/$/ $channel_cc/" patch.topics.yaml
 sed -i "/name:/ s/$/ $default_alamedanotificationchannels/" patch.topics.yaml
 sed -i "/to:/ s/$/ $channel_to/" patch.topics.yaml
 
-echo -e "\n$(tput setaf 2)Starting patch alamedanotificationchannels$(tput sgr 0) $(tput setaf 6)$default_alamedanotificationchannels$(tput sgr 0) ..."
+echo -e "\n$(tput setaf 2)Starting to update alamedanotificationchannels$(tput sgr 0) $(tput setaf 6)$default_alamedanotificationchannels$(tput sgr 0) ..."
 kubectl patch alamedanotificationchannels $default_alamedanotificationchannels --type merge --patch "$(cat patch.channel.yaml)"
 if [ "$?" != "0" ];then
-    echo -e "$(tput setaf 1)Patch channel failed. Please double check the info you input.$(tput sgr 0)"
+    echo -e "$(tput setaf 1)Updating channel failed. Please double-check the info you input.$(tput sgr 0)"
     exit
 else
     echo -e "Done."
 fi
 
-echo -e "\n$(tput setaf 2)Starting patch alamedanotificationtopics$(tput sgr 0) $(tput setaf 6)$default_alamedanotificationtopics$(tput sgr 0) ..."
+echo -e "\n$(tput setaf 2)Starting to update alamedanotificationtopics$(tput sgr 0) $(tput setaf 6)$default_alamedanotificationtopics$(tput sgr 0) ..."
 kubectl patch alamedanotificationtopics $default_alamedanotificationtopics --type merge --patch "$(cat patch.topics.yaml)"
 if [ "$?" != "0" ];then
-    echo -e "$(tput setaf 1)Patch topic failed. Please double check the info you input.$(tput sgr 0)"
+    echo -e "$(tput setaf 1)Updating topic failed. Please double-check the info you input.$(tput sgr 0)"
     exit
 else
     echo -e "Done."
@@ -253,10 +253,10 @@ metadata:
     notifying.containers.ai/test-channel-to: $test_email
 __EOF__
 
-echo -e "\n$(tput setaf 2)Starting send out testing email$(tput sgr 0) ..."
+echo -e "\n$(tput setaf 2)Starting to send out a test email$(tput sgr 0) ..."
 kubectl patch alamedanotificationchannels $default_alamedanotificationchannels --type merge --patch "$(cat patch.channel.testemail.yaml)"
 if [ "$?" != "0" ];then
-    echo -e "$(tput setaf 1)Test email patch failed. Please double check the info you input.$(tput sgr 0)"
+    echo -e "$(tput setaf 1)Test email update failed. Please double-check the info you input.$(tput sgr 0)"
     exit
 fi
 
@@ -266,11 +266,11 @@ result_msg="`kubectl get alamedanotificationchannels $default_alamedanotificatio
 result_status="`kubectl get alamedanotificationchannels $default_alamedanotificationchannels -o 'jsonpath={.status.channelTest.success}' 2>/dev/null`"
 
 if [ "$result_status" == "true" ];then
-    echo -e "\n$(tput setaf 6)Done. Test email send out successfully. You can now check your email inbox.$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Done. The test email sends out successfully. You can now check your email inbox.$(tput sgr 0)"
 else
     echo "==================$(tput setaf 1) Error Msg $(tput sgr 0)====================================="
     echo "$result_msg"
     echo "=================================================================="
 
-    echo -e "\n$(tput setaf 1)Test email send out failed. Please double check the settings you input.$(tput sgr 0)"
+    echo -e "\n$(tput setaf 1)Test email send out failed. Please double-check the settings you input.$(tput sgr 0)"
 fi

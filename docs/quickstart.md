@@ -55,8 +55,8 @@ spec:
     codeNumber: D3JXN-LIFTQ-KQEZ3-WZBNI-DA3WZ-A7HKQ		## default trial keycode
   selfDriving: false            ## to enable resource self-orchestration of the deployed Federator.ai components
                                 ## it is recommended NOT to use ephemeral data storage for Alameda influxdb component when self-Driving is enabled	
-  enableExecution: true
-  enableGui: true
+  enableExecution: false
+  enableGui: false
   enableFedemeter: true
   enableDispatcher: false
 

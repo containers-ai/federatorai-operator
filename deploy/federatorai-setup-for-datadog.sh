@@ -16,72 +16,205 @@ __EOF__
     exit 1
 }
 
-patch_alamedaservice()
-{
-    alamedaservice_yaml_name="alamedaservice_patch.yaml"
-    echo -e "\n$(tput setaf 3)Patching alamedaservice ...$(tput sgr 0)"
-
-    cluster_uid=`kubectl get cm cluster-info -n default -o jsonpath='{.metadata.uid}'`
-    if [ "$cluster_uid" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! Failed to get cluster uid.$(tput sgr 0)"
-        exit 8
-    fi
-
-    kubectl get alamedaservice $alamedaservice_name -n $install_namespace -o jsonpath='{.spec.federatoraiDataAdapter}'|grep -q "CLUSTER_NAME"
-    if [ "$?" != "0" ]; then
-
-        cat > $file_folder/${alamedaservice_yaml_name} << __EOF__
-spec:
-  federatoraiDataAdapter:
-    env:
-      - name: CLUSTER_NAME
-        value: ${cluster_uid}
-__EOF__
-
-        kubectl patch alamedaservice $alamedaservice_name -n $install_namespace --type merge --patch "$(cat $file_folder/${alamedaservice_yaml_name})"
-        if [ "$?" != "0" ];then
-            echo -e "\n$(tput setaf 1)Error! Failed to patch alamedaservice $alamedaservice_name.$(tput sgr 0)"
-            exit 8
-        fi
-        wait_until_pods_ready $max_wait_pods_ready_time 30 $install_namespace 5
-
-    fi
-    echo -e "\n$(tput setaf 3)...Done.$(tput sgr 0)"
-}
 
 patch_data_adapter_secret()
 {
-    echo -e "\n$(tput setaf 3)Patching Federator.ai data adapter secret...$(tput sgr 0)"
-    if [ "$datadogAPIKey" = "" ] || [ "$datadogApplicationKey" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! API key and Application key can't be empty.$(tput sgr 0)"
-        exit
+    if [ "$key_modified" = "y" ]; then
+        echo -e "\n$(tput setaf 3)Updating Federator.ai data adapter secret...$(tput sgr 0)"
+        if [ "$datadogAPIKey" = "" ] || [ "$datadogApplicationKey" = "" ]; then
+            echo -e "\n$(tput setaf 1)Error! API key and Application key can't be empty.$(tput sgr 0)"
+            exit
+        fi
+
+        secret_yaml_name="adapter-secret.yaml"
+
+        kubectl get secret $secret_name -n $install_namespace -o yaml > $file_folder/$secret_yaml_name
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error! Failed to get secret $secret_name$(tput sgr 0)"
+            exit 1
+        fi
+
+        apikey_base64=`echo -n "$datadogAPIKey" | base64`
+        applicationkey_base64=`echo -n "$datadogApplicationKey" | base64`
+        sed -i "s|datadog_api_key:.*|datadog_api_key: $apikey_base64|g" $file_folder/$secret_yaml_name
+        sed -i "s|datadog_application_key:.*|datadog_application_key: $applicationkey_base64|g" $file_folder/$secret_yaml_name
+
+        kubectl apply -n $install_namespace -f $file_folder/$secret_yaml_name
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error! Failed to apply update $file_folder/$secret_yaml_name on data adapter secret $secret_name$(tput sgr 0)"
+            echo -e "$(tput setaf 1)Please review file content.$(tput sgr 0)"
+            exit 1
+        fi
+        echo -e "\n$(tput setaf 3)...Done.$(tput sgr 0)"
+    fi
+}
+
+add_alamedascaler_for_kafka()
+{
+    if [ "$configure_kafka" != "y" ]; then
+        echo -e "\n$(tput setaf 3)Skipping Kafka alamedascaler setting...$(tput sgr 0)"
+        return
+    fi
+    echo -e "\n$(tput setaf 3)Adding alamedascaler for Kafka...$(tput sgr 0)"
+
+    scaler_index=0
+    scaler_count=$(./jq -r '.dataAdapterConfigmapForKafka | length' $json_file)
+    while [[ $scaler_index -lt $scaler_count ]]
+    do
+        scaler_name=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'] | .scalerName' $json_file)
+        yaml_name="${scaler_name}.yaml"
+        clusterName=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'] | .clusterName' $json_file)
+
+        cat > $file_folder/$yaml_name << __EOF__
+apiVersion: autoscaling.containers.ai/v1alpha2
+kind: AlamedaScaler
+metadata:
+  name: ${scaler_name}
+  namespace: ${install_namespace}
+spec:
+  clusterName: ${clusterName}
+  controllers:
+__EOF__
+        controller_index=0
+        controller_count=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller | length' $json_file)
+        while [[ $controller_index -lt $controller_count ]]
+        do
+            enableExecution=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .enableExecution' $json_file)
+            kafkaExporterNamespace=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .kafkaExporterNamespace' $json_file)
+            kafkaConsumerGroupKind=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .kafkaConsumerGroupKind' $json_file)
+            kafkaConsumerGroupName=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .kafkaConsumerGroupName' $json_file)
+            kafkaConsumerGroupNamespace=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .kafkaConsumerGroupNamespace' $json_file)
+            kafkaTopicName=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .kafkaTopicName' $json_file)
+            kafkaConsumerGroupId=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .kafkaConsumerGroupId' $json_file)
+            kafkaConsumerMinimumReplica=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .kafkaConsumerMinimumReplica' $json_file)
+            kafkaConsumerMaximumReplica=$(./jq -r '.dataAdapterConfigmapForKafka['$scaler_index'].controller['$controller_index'] | .kafkaConsumerMaximumReplica' $json_file)
+            cat >> $file_folder/$yaml_name << __EOF__
+    - type: kafka
+      enableExecution: ${enableExecution}
+      scaling: hpa
+      kafka:
+        exporterNamespace: ${kafkaExporterNamespace}
+        consumerGroup:
+          namespace: ${kafkaConsumerGroupNamespace}
+          name: ${kafkaConsumerGroupName}
+          kind: ${kafkaConsumerGroupKind}
+          topic: ${kafkaTopicName}
+          groupId: ${kafkaConsumerGroupId}
+        hpaParameters:
+          maxReplicas: ${kafkaConsumerMaximumReplica}
+          minReplicas: ${kafkaConsumerMinimumReplica}
+__EOF__
+            ((controller_index = controller_index + 1))
+        done
+
+        fileArray+=( "$file_folder/$yaml_name" )
+        ((scaler_index = scaler_index + 1))
+    done
+
+    for file_path in "${fileArray[@]}"
+    do
+        kubectl apply -f $file_path
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error! Failed to apply Kafka alamedascaler file $file_path $(tput sgr 0)"
+            echo -e "$(tput setaf 1)Please review file content.$(tput sgr 0)"
+            exit 1
+        fi
+    done
+
+    echo -e "\n$(tput setaf 3)...Done.$(tput sgr 0)"
+}
+
+add_alamedascaler_for_generic_app()
+{
+    if [ "$configure_general" != "y" ]; then
+        echo -e "\n$(tput setaf 3)Skipping generic application alamedascaler setting....$(tput sgr 0)"
+        return
     fi
 
-    secret_name="federatorai-data-adapter-secret"
-    secret_yaml_name="adapter-secret.yaml"
+    echo -e "\n$(tput setaf 3)Adding alamedascaler for generic applications...$(tput sgr 0)"
 
-    kubectl get secret $secret_name -n $install_namespace -o yaml > $file_folder/$secret_yaml_name
-    if [ "$?" != "0" ]; then
-        echo -e "\n$(tput setaf 1)Error! Failed to get secret $secret_name$(tput sgr 0)"
-        exit 1
-    fi
+    scaler_index=0
+    scaler_count=$(./jq -r '.dataAdapterConfigmapForGeneralApplication | length' $json_file)
+    fileArray=()
+    while [[ $scaler_index -lt $scaler_count ]]
+    do
+        scaler_name=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'] | .scalerName' $json_file)
+        yaml_name="${scaler_name}.yaml"
+        clusterName=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'] | .clusterName' $json_file)
 
-    apikey_base64=`echo -n "$datadogAPIKey" | base64`
-    applicationkey_base64=`echo -n "$datadogApplicationKey" | base64`
-    sed -i "s|datadog_api_key:.*|datadog_api_key: $apikey_base64|g" $file_folder/$secret_yaml_name
-    sed -i "s|datadog_application_key:.*|datadog_application_key: $applicationkey_base64|g" $file_folder/$secret_yaml_name
+        cat > $file_folder/$yaml_name << __EOF__
+apiVersion: autoscaling.containers.ai/v1alpha2
+kind: AlamedaScaler
+metadata:
+  name: ${scaler_name}
+  namespace: ${install_namespace}
+spec:
+  clusterName: ${clusterName}
+  controllers:
+__EOF__
 
-    kubectl apply -n $install_namespace -f $file_folder/$secret_yaml_name
-    if [ "$?" != "0" ]; then
-        echo -e "\n$(tput setaf 1)Error! Failed to apply patch on data adapter secret $secret_name$(tput sgr 0)"
-        exit 1
-    fi
+        controller_index=0
+        controller_count=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'].controller | length' $json_file)
+        while [[ $controller_index -lt $controller_count ]]
+        do
+            enableExecution=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'].controller['$controller_index'] | .enableExecution' $json_file)
+            genericTargetKind=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'].controller['$controller_index'] | .genericTargetKind' $json_file)
+            genericTargetName=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'].controller['$controller_index'] | .genericTargetName' $json_file)
+            genericTargetNamespace=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'].controller['$controller_index'] | .genericTargetNamespace' $json_file)
+            minReplicas=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'].controller['$controller_index'] | .minReplicas' $json_file)
+            maxReplicas=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'].controller['$controller_index'] | .maxReplicas' $json_file)
+            enableHPARecommendation=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$scaler_index'].controller['$controller_index'] | .enableHPARecommendation' $json_file)
+            cat >> $file_folder/$yaml_name << __EOF__
+    - type: generic
+      enableExecution: ${enableExecution}
+__EOF__
+            if [ "$enableHPARecommendation" = "y" ]; then
+                scaling_type="hpa"
+                cat >> $file_folder/$yaml_name << __EOF__
+      scaling: ${scaling_type}
+      generic:
+        target:
+          namespace: ${genericTargetNamespace}
+          name: ${genericTargetName}
+          kind: ${genericTargetKind}
+        hpaParameters:
+          maxReplicas: ${maxReplicas}
+          minReplicas: ${minReplicas}
+__EOF__
+            else
+                scaling_type="predictOnly"
+                cat >> $file_folder/$yaml_name << __EOF__
+      scaling: ${scaling_type}
+      generic:
+        target:
+          namespace: ${genericTargetNamespace}
+          name: ${genericTargetName}
+          kind: ${genericTargetKind}
+__EOF__
+            fi
+            ((controller_index = controller_index + 1))
+        done
+
+        fileArray+=( "$file_folder/$yaml_name" )
+        ((scaler_index = scaler_index + 1))
+    done
+
+    for file_path in "${fileArray[@]}"
+    do
+        kubectl apply -f $file_path
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error! Failed to apply generic alamedascaler file $file_path $(tput sgr 0)"
+            echo -e "$(tput setaf 1)Please review file content.$(tput sgr 0)"
+            exit 1
+        fi
+    done
+
     echo -e "\n$(tput setaf 3)...Done.$(tput sgr 0)"
 }
 
 patch_data_adapter_configmap()
 {
-    echo -e "\n$(tput setaf 3)Patching Federator.ai data adapter configmap...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 3)Updating Federator.ai data adapter configmap...$(tput sgr 0)"
     configmap_name="federatorai-data-adapter-config"
     configmap_yaml_name="adapter-configmap.yaml"
 
@@ -91,71 +224,25 @@ patch_data_adapter_configmap()
     fi
 
     sed -i "s|namespace:.*|namespace: $install_namespace|g" $file_folder/$configmap_yaml_name
-    # Delete every line after # anchor
-    sed -i '/# anchor/,$d' $file_folder/$configmap_yaml_name
 
-    index=0
-    count=$(./jq -r '.dataAdapterConfigmap | length' $json_file)
+    # if [ "$configure_general" = "y" ]; then
+    #     # Enable GUI for now, after datadog release. These line must be removed
+    #     sed -i "s|enable_general_dashboard =.*|enable_general_dashboard = true|g" $file_folder/$configmap_yaml_name
+    # fi
 
-    while [[ $index -lt $count ]]; do
-        kafkaConsumerDeploymentName=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerDeploymentName' $json_file)
-        kafkaConsumerDeploymentNamespace=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerDeploymentNamespace' $json_file)
-        kafkaConsumerMinimumReplica=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerMinimumReplica' $json_file)
-        kafkaConsumerMaximumReplica=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerMaximumReplica' $json_file)
-        kafkaConsumerGroupName=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerGroupName' $json_file)
-        kafkaConsumerGroupNamespace=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerGroupNamespace' $json_file)
-        kafkaTopicName=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaTopicName' $json_file)
-        kafkaTopicNamespace=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaTopicNamespace' $json_file)
+    # if [ "$configure_kafka" = "y" ]; then
+    #     # Enable GUI for now, after datadog release. These line must be removed
+    #     sed -i "s|enable_kafka_dashboard =.*|enable_kafka_dashboard = true|g" $file_folder/$configmap_yaml_name
+    # fi
 
-        cat >> $file_folder/$configmap_yaml_name << __EOF__
-      [[inputs.datadog_application_aware]]
-        urls = ["\$DATADOG_QUERY_URL"]
-        api_key = "\$DATADOG_API_KEY"
-        application_key = "\$DATADOG_APPLICATION_KEY"
-        # If we keep CLUSTER_NAME value empty, the agent will get k8s cluster name automatically.
-        cluster_name = "\$CLUSTER_NAME"
-
-        [inputs.datadog_application_aware.watched_kafka_consumer]
-          application = "${kafkaConsumerDeploymentName}"
-          namespace = "${kafkaConsumerDeploymentNamespace}"
-          min_replicas = ${kafkaConsumerMinimumReplica}
-          max_replicas = ${kafkaConsumerMaximumReplica}
-          topics = ["${kafkaTopicName}"]
-          consumer_groups = ["${kafkaConsumerGroupName}"]
-
-      [[inputs.alameda_datahub_query]]
-        url = "\$DATAHUB_URL"
-        port = "\$DATAHUB_PORT"
-        ##The recommendation query range, unit: minutes
-        recommendation_interval = 5
-        # If we keep CLUSTER_NAME value empty, the agent will get k8s cluster name automatically.
-        cluster_name = "\$CLUSTER_NAME"
-
-        [[inputs.alameda_datahub_query.watched_source]]
-          name = "${kafkaConsumerGroupName}"
-          namespace = "${kafkaConsumerGroupNamespace}"
-          measurement = "kafka_consumer_group"
-          scope = "recommendation"
-
-        [[inputs.alameda_datahub_query.watched_source]]
-          name = "${kafkaConsumerGroupName}"
-          namespace = "${kafkaConsumerGroupNamespace}"
-          measurement = "kafka_consumer_group_current_offset"
-          scope = "prediction"
-
-        [[inputs.alameda_datahub_query.watched_source]]
-          name = "${kafkaTopicName}"
-          namespace = "${kafkaTopicNamespace}"
-          measurement = "kafka_topic_partition_current_offset"
-          scope = "prediction"
-
-__EOF__
-        ((index = index + 1))
-    done
+    # Per SL&Jason, remain GUI switch as default "OFF".
+    # sed -i "s|enable_general_dashboard =.*|enable_general_dashboard = true|g" $file_folder/$configmap_yaml_name
+    # sed -i "s|enable_kafka_dashboard =.*|enable_kafka_dashboard = true|g" $file_folder/$configmap_yaml_name
 
     kubectl apply -n $install_namespace -f $file_folder/$configmap_yaml_name
     if [ "$?" != "0" ]; then
-        echo -e "\n$(tput setaf 1)Error! Failed to apply patch on data adapter configmap.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! Failed to apply update $file_folder/$configmap_yaml_name on data adapter configmap.$(tput sgr 0)"
+        echo -e "$(tput setaf 1)Please review file content.$(tput sgr 0)"
         exit 1
     fi
     echo -e "\n$(tput setaf 3)...Done.$(tput sgr 0)"
@@ -207,7 +294,7 @@ pods_ready()
     -o=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.status.phase}{"\t"}{.status.reason}{"\n"}{end}' \
       | while read name status phase reason _junk; do
           if [ "$status" != "True" ]; then
-            msg="Waiting pod $name in namespace $namespace to be ready."
+            msg="Waiting for pod $name in namespace $namespace to be ready."
             [ "$phase" != "" ] && msg="$msg phase: [$phase]"
             [ "$reason" != "" ] && msg="$msg reason: [$reason]"
             echo "$msg"
@@ -220,88 +307,337 @@ pods_ready()
 
 get_datadog_key()
 {
-    ### datadog info
-    echo -e "\nGetting Datadog info..."
-    default=$(./jq -r '.dataAdapterSecret.datadogAPIKey' $json_file)
-    read -r -p "$(tput setaf 6)Input a Datadog API Key [$default]: $(tput sgr 0)" datadogAPIKey </dev/tty
-    datadogAPIKey=${datadogAPIKey:-$default}
+    secret_name="federatorai-data-adapter-secret"
+    secret_api_key="`kubectl get secret $secret_name -n $install_namespace -o jsonpath='{.data.datadog_api_key}'|base64 -d`"
+    secret_app_key="`kubectl get secret $secret_name -n $install_namespace -o jsonpath='{.data.datadog_application_key}'|base64 -d`"
 
-    default=$(./jq -r '.dataAdapterSecret.datadogApplicationKey' $json_file)
-    read -r -p "$(tput setaf 6)Input a Datadog Application Key [$default]: $(tput sgr 0)" datadogApplicationKey </dev/tty
-    datadogApplicationKey=${datadogApplicationKey:-$default}
+    key_modified="n"
+    if [ "$secret_api_key" = "" ] || [ "$secret_app_key" = "" ] || [ "$secret_api_key" = "dummy" ] || [ "$secret_app_key" = "dummy" ]; then
+        key_modified="y"
+        while [ "$datadogAPIKey" = "" ] || [ "$datadogApplicationKey" = "" ]
+        do
+            read -r -p "$(tput setaf 6)Please input Datadog API key: $(tput sgr 0)" datadogAPIKey </dev/tty
+            read -r -p "$(tput setaf 6)Please input Datadog Application key: $(tput sgr 0)" datadogApplicationKey </dev/tty
+        done
+    else
+        while [ "$reconfigure_action" != "y" ] && [ "$reconfigure_action" != "n" ]
+        do
+            default="n"
+            read -r -p "$(tput setaf 10)Do you want to reconfigure Datadog API & Application keys? [default: $default]: $(tput sgr 0)" reconfigure_action </dev/tty
+            reconfigure_action=${reconfigure_action:-$default}
+            reconfigure_action=$(echo "$reconfigure_action" | tr '[:upper:]' '[:lower:]')
+        done
+        if [ "$reconfigure_action" = "y" ]; then
+            key_modified="y"
+            while [ "$datadogAPIKey" = "" ] || [ "$datadogApplicationKey" = "" ]
+            do
+                read -r -p "$(tput setaf 6)Please input Datadog API key [current: $secret_api_key]: $(tput sgr 0)" datadogAPIKey </dev/tty
+                datadogAPIKey=${datadogAPIKey:-$secret_api_key}
 
-    configStr=$( ./jq -c $(printf '.dataAdapterSecret.datadogAPIKey="%s"' $datadogAPIKey) <<<$configStr )
-    configStr=$( ./jq -c $(printf '.dataAdapterSecret.datadogApplicationKey="%s"' $datadogApplicationKey) <<<$configStr )
-    ./jq -r '.' <<< $configStr > $json_file
+                read -r -p "$(tput setaf 6)Please input Datadog Application key [current: $secret_app_key]: $(tput sgr 0)" datadogApplicationKey </dev/tty
+                datadogApplicationKey=${datadogApplicationKey:-$secret_app_key}
+            done
+        fi
+    fi
+
+    if [ "$key_modified" = "y" ]; then
+        configStr=$( ./jq -c $(printf '.dataAdapterSecret.datadogAPIKey="%s"' $datadogAPIKey) <<<$configStr )
+        configStr=$( ./jq -c $(printf '.dataAdapterSecret.datadogApplicationKey="%s"' $datadogApplicationKey) <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+    fi
 }
 
 get_kafka_info()
 {
-    index=0
+    default="y"
+    echo ""
+    read -r -p "$(tput setaf 3)Do you want to configure alamedascaler for kafka? [default: $default]: $(tput sgr 0): " configure_kafka </dev/tty
+    configure_kafka=${configure_kafka:-$default}
+
+    if [ "$configure_kafka" != "y" ]; then
+        configStr=$( ./jq -c 'del(.dataAdapterConfigmapForKafka[0:])' <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+        return
+    fi
+
+    set_index=0
     next_set="y"
     while [[ "$next_set" = "y" ]]
     do
-        echo -e "\nGetting Kafka info... No.$((index+1))"
-        default=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerDeploymentName' $json_file | sed 's:null::g')
-        read -r -p "$(tput setaf 6)Input Kafka consumer deployment name [$default]: $(tput sgr 0)" kafkaConsumerDeploymentName </dev/tty
-        kafkaConsumerDeploymentName=${kafkaConsumerDeploymentName:-$default}
+        echo -e "\nGetting Kafka info... No.$((set_index+1))"
 
-        default=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerDeploymentNamespace' $json_file | sed 's:null::g')
-        read -r -p "$(tput setaf 6)Input Kafka consumer deployment namespace [$default]: $(tput sgr 0)" kafkaConsumerDeploymentNamespace </dev/tty
-        kafkaConsumerDeploymentNamespace=${kafkaConsumerDeploymentNamespace:-$default}
+        # scalerName
+        default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'] | .scalerName' $json_file | sed 's:null::g')
+        read -r -p "$(tput setaf 6)Input alamedascaler name [$default]: $(tput sgr 0)" scalerName </dev/tty
+        scalerName=${scalerName:-$default}
 
-        default=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerMinimumReplica' $json_file | sed 's:null::g')
-        read -r -p "$(tput setaf 6)Input Kafka consumer minimum replica number [$default]: $(tput sgr 0)" kafkaConsumerMinimumReplica </dev/tty
-        kafkaConsumerMinimumReplica=${kafkaConsumerMinimumReplica:-$default}
-
-        default=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerMaximumReplica' $json_file | sed 's:null::g')
-        read -r -p "$(tput setaf 6)Input Kafka consumer maximum replica number [$default]: $(tput sgr 0)" kafkaConsumerMaximumReplica </dev/tty
-        kafkaConsumerMaximumReplica=${kafkaConsumerMaximumReplica:-$default}
-
-        default=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerGroupName' $json_file | sed 's:null::g')
-        read -r -p "$(tput setaf 6)Input Kafka consumer group name [$default]: $(tput sgr 0)" kafkaConsumerGroupName </dev/tty
-        kafkaConsumerGroupName=${kafkaConsumerGroupName:-$default}
-
-        default=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaConsumerGroupNamespace' $json_file | sed 's:null::g')
-        read -r -p "$(tput setaf 6)Input Kafka consumer group namespace [$default]: $(tput sgr 0)" kafkaConsumerGroupNamespace </dev/tty
-        kafkaConsumerGroupNamespace=${kafkaConsumerGroupNamespace:-$default}
-
-        default=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaTopicName' $json_file | sed 's:null::g')
-        read -r -p "$(tput setaf 6)Input Kafka consumer topic name [$default]: $(tput sgr 0)" kafkaTopicName </dev/tty
-        kafkaTopicName=${kafkaTopicName:-$default}
-
-        default=$(./jq -r '.dataAdapterConfigmap['$index'] | .kafkaTopicNamespace' $json_file | sed 's:null::g')
-        read -r -p "$(tput setaf 6)Input Kafka consumer topic namespace [$default]: $(tput sgr 0)" kafkaTopicNamespace </dev/tty
-        kafkaTopicNamespace=${kafkaTopicNamespace:-$default}
-
-        if [ "$kafkaConsumerDeploymentName" = "" ] || [ "$kafkaConsumerDeploymentNamespace" = "" ] || [ "$kafkaConsumerMinimumReplica" = "" ] || [ "$kafkaConsumerMaximumReplica" = "" ] || [ "$kafkaConsumerGroupName" = "" ] || [ "$kafkaConsumerGroupNamespace" = "" ] || [ "$kafkaTopicName" = "" ] || [ "$kafkaTopicNamespace" = "" ]; then
-            echo -e "\n$(tput setaf 1)Error! Kafka info can't be empty.$(tput sgr 0)"
-            exit 7
-        fi
-
-        configStr=$( ./jq -c $(printf '.dataAdapterConfigmap[%s].kafkaConsumerDeploymentName="%s"' $index $kafkaConsumerDeploymentName) <<<$configStr )
-        configStr=$( ./jq -c $(printf '.dataAdapterConfigmap[%s].kafkaConsumerDeploymentNamespace="%s"' $index $kafkaConsumerDeploymentNamespace) <<<$configStr )
-        configStr=$( ./jq -c $(printf '.dataAdapterConfigmap[%s].kafkaConsumerMinimumReplica="%s"' $index $kafkaConsumerMinimumReplica) <<<$configStr )
-        configStr=$( ./jq -c $(printf '.dataAdapterConfigmap[%s].kafkaConsumerMaximumReplica="%s"' $index $kafkaConsumerMaximumReplica) <<<$configStr )
-        configStr=$( ./jq -c $(printf '.dataAdapterConfigmap[%s].kafkaConsumerGroupName="%s"' $index $kafkaConsumerGroupName) <<<$configStr )
-        configStr=$( ./jq -c $(printf '.dataAdapterConfigmap[%s].kafkaConsumerGroupNamespace="%s"' $index $kafkaConsumerGroupNamespace) <<<$configStr )
-        configStr=$( ./jq -c $(printf '.dataAdapterConfigmap[%s].kafkaTopicName="%s"' $index $kafkaTopicName) <<<$configStr )
-        configStr=$( ./jq -c $(printf '.dataAdapterConfigmap[%s].kafkaTopicNamespace="%s"' $index $kafkaTopicNamespace) <<<$configStr )
+        configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].scalerName="%s"' $set_index $scalerName) <<<$configStr )
         ./jq -r '.' <<< $configStr > $json_file
-        ((index = index + 1))
+
+        # clusterName
+        default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'] | .clusterName' $json_file | sed 's:null::g')
+        read -r -p "$(tput setaf 6)Input cluster name [$default]: $(tput sgr 0)" clusterName </dev/tty
+        clusterName=${clusterName:-$default}
+        configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].clusterName="%s"' $set_index $clusterName) <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+
+        # controller info
+        controller_index=0
+        next_controller="y"
+        while [[ "$next_controller" = "y" ]]
+        do
+            echo -e "\nGetting controller info for $scalerName alamedascaler... No.$((controller_index+1))"
+            ## For 4.3-husky, set enableExecution = 'false' per SL
+            enableExecution="false"
+
+            default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'].controller['$controller_index'] | .kafkaExporterNamespace' $json_file | sed 's:null::g')
+            read -r -p "$(tput setaf 6)Input Kafka exporter namespace [$default]: $(tput sgr 0)" kafkaExporterNamespace </dev/tty
+            kafkaExporterNamespace=${kafkaExporterNamespace:-$default}
+
+            kafkaConsumerGroupKind=""
+            while [ "$kafkaConsumerGroupKind" != "Deployment" ] && [ "$kafkaConsumerGroupKind" != "DeploymentConfig" ] && [ "$kafkaConsumerGroupKind" != "StatefulSet" ]
+            do
+                default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'].controller['$controller_index'] | .kafkaConsumerGroupKind' $json_file | sed 's:null::g')
+                read -r -p "$(tput setaf 6)Input Kafka consumer group kind (Deployment/DeploymentConfig/StatefulSet) [$default]: $(tput sgr 0)" kafkaConsumerGroupKind </dev/tty
+                kafkaConsumerGroupKind=${kafkaConsumerGroupKind:-$default}
+            done
+
+            default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'].controller['$controller_index'] | .kafkaConsumerGroupName' $json_file | sed 's:null::g')
+            read -r -p "$(tput setaf 6)Input Kafka consumer group kind name [$default]: $(tput sgr 0)" kafkaConsumerGroupName </dev/tty
+            kafkaConsumerGroupName=${kafkaConsumerGroupName:-$default}
+
+            default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'].controller['$controller_index'] | .kafkaConsumerGroupNamespace' $json_file | sed 's:null::g')
+            read -r -p "$(tput setaf 6)Input Kafka consumer group namespace [$default]: $(tput sgr 0)" kafkaConsumerGroupNamespace </dev/tty
+            kafkaConsumerGroupNamespace=${kafkaConsumerGroupNamespace:-$default}
+
+            default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'].controller['$controller_index'] | .kafkaTopicName' $json_file | sed 's:null::g')
+            read -r -p "$(tput setaf 6)Input Kafka consumer topic name [$default]: $(tput sgr 0)" kafkaTopicName </dev/tty
+            kafkaTopicName=${kafkaTopicName:-$default}
+
+            default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'].controller['$controller_index'] | .kafkaConsumerGroupId' $json_file | sed 's:null::g')
+            echo -e "\nYou can use Kafka command-line tool 'kafka-consumer-group.sh' (download separately or enter into a broker pod, in /bin directory) to list consumer groups."
+            echo -e "e.g.: \"/bin/kafka-consumer-groups.sh --bootstrap-server <kafka-bootstrap-service>:9092 --describe --all-groups --members\""
+            echo -e "The first column of output is the 'kafkaConsumerGroupId'."
+            read -r -p "$(tput setaf 6)Input Kafka consumer group id [$default]: $(tput sgr 0)" kafkaConsumerGroupId </dev/tty
+            kafkaConsumerGroupId=${kafkaConsumerGroupId:-$default}
+
+            default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'].controller['$controller_index'] | .kafkaConsumerMinimumReplica' $json_file | sed 's:null::g')
+            read -r -p "$(tput setaf 6)Input Kafka consumer minimum replica number [$default]: $(tput sgr 0)" kafkaConsumerMinimumReplica </dev/tty
+            kafkaConsumerMinimumReplica=${kafkaConsumerMinimumReplica:-$default}
+
+            case $kafkaConsumerMinimumReplica in
+                ''|*[!0-9]*) echo -e "\n$(tput setaf 1)Error! Kafka consumer minimum replicas number needs to be an integer.$(tput sgr 0)" && exit;;
+                *) ;;
+            esac
+
+            default=$(./jq -r '.dataAdapterConfigmapForKafka['$set_index'].controller['$controller_index'] | .kafkaConsumerMaximumReplica' $json_file | sed 's:null::g')
+            read -r -p "$(tput setaf 6)Input Kafka consumer maximum replica number [$default]: $(tput sgr 0)" kafkaConsumerMaximumReplica </dev/tty
+            kafkaConsumerMaximumReplica=${kafkaConsumerMaximumReplica:-$default}
+
+            case $kafkaConsumerMaximumReplica in
+                ''|*[!0-9]*) echo -e "\n$(tput setaf 1)Error! Kafka consumer maximum replicas number needs to be an integer.$(tput sgr 0)" && exit;;
+                *) ;;
+            esac
+
+            if [ "$clusterName" = "" ] || [ "$enableExecution" = "" ] || [ "$kafkaExporterNamespace" = "" ] || [ "$kafkaConsumerGroupKind" = "" ] || [ "$kafkaConsumerMinimumReplica" = "" ] || [ "$kafkaConsumerMaximumReplica" = "" ] || [ "$kafkaConsumerGroupName" = "" ] || [ "$kafkaConsumerGroupNamespace" = "" ] || [ "$kafkaTopicName" = "" ] || [ "$kafkaConsumerGroupId" = "" ]; then
+                echo -e "\n$(tput setaf 1)Error! Kafka info can't be empty.$(tput sgr 0)"
+                exit 7
+            fi
+
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].enableExecution="%s"' $set_index $controller_index $enableExecution) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].kafkaExporterNamespace="%s"' $set_index $controller_index $kafkaExporterNamespace) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].kafkaConsumerGroupKind="%s"' $set_index $controller_index $kafkaConsumerGroupKind) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].kafkaConsumerGroupName="%s"' $set_index $controller_index $kafkaConsumerGroupName) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].kafkaConsumerGroupNamespace="%s"' $set_index $controller_index $kafkaConsumerGroupNamespace) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].kafkaTopicName="%s"' $set_index $controller_index $kafkaTopicName) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].kafkaConsumerGroupId="%s"' $set_index $controller_index $kafkaConsumerGroupId) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].kafkaConsumerMinimumReplica="%s"' $set_index $controller_index $kafkaConsumerMinimumReplica) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForKafka[%s].controller[%s].kafkaConsumerMaximumReplica="%s"' $set_index $controller_index $kafkaConsumerMaximumReplica) <<<$configStr )
+            ./jq -r '.' <<< $configStr > $json_file
+
+            ((controller_index = controller_index + 1))
+            echo ""
+            sleep 1
+            default="n"
+            read -r -p "$(tput setaf 10)Do you want to add another controller in $scalerName alamedascaler? [default: $default]: $(tput sgr 0)" next_controller </dev/tty
+            next_controller=${next_controller:-$default}
+            while [[ "$next_controller" != "y" ]] && [[ "$next_controller" != "n" ]]
+            do
+                read -r -p "$(tput setaf 10)Do you want to add another controller in $scalerName alamedascaler? [default: $default]: $(tput sgr 0)" next_controller </dev/tty
+                next_controller=${next_controller:-$default}
+            done
+            if [ "$next_controller" = "n" ]; then
+                configStr=$( ./jq -c $(printf 'del(.dataAdapterConfigmapForKafka[%s].controller[%s:])' $set_index $controller_index) <<<$configStr )
+                ./jq -r '.' <<< $configStr > $json_file
+            fi
+        done
+
+        ((set_index = set_index + 1))
         echo ""
         sleep 1
 
         default="n"
-        read -r -p "$(tput setaf 2)Do you want to input another set? [default: n]: $(tput sgr 0)" next_set </dev/tty
+        read -r -p "$(tput setaf 10)Do you want to add another Kafka set? [default: n]: $(tput sgr 0)" next_set </dev/tty
         next_set=${next_set:-$default}
         while [[ "$next_set" != "y" ]] && [[ "$next_set" != "n" ]]
         do
-            read -r -p "$(tput setaf 2)Do you want to input another set? [default: n]: $(tput sgr 0)" next_set </dev/tty
+            read -r -p "$(tput setaf 10)Do you want to add another Kafka set? [default: n]: $(tput sgr 0)" next_set </dev/tty
             next_set=${next_set:-$default}
         done
-        if [[ "$next_set" == "n" ]]; then
-            configStr=$( ./jq -c $(printf 'del(.dataAdapterConfigmap[%s:])' $index) <<<$configStr )
+        if [ "$next_set" = "n" ]; then
+            configStr=$( ./jq -c $(printf 'del(.dataAdapterConfigmapForKafka[%s:])' $set_index) <<<$configStr )
+            ./jq -r '.' <<< $configStr > $json_file
+        fi
+    done
+}
+
+get_general_application_info()
+{
+    default="y"
+    echo ""
+    read -r -p "$(tput setaf 3)Do you want to configure alamedascaler for generic application? [default: $default]: $(tput sgr 0): " configure_general </dev/tty
+    configure_general=${configure_general:-$default}
+
+    if [ "$configure_general" != "y" ]; then
+        configStr=$( ./jq -c 'del(.dataAdapterConfigmapForGeneralApplication[0:])' <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+        return
+    fi
+
+    set_index=0
+    next_set="y"
+
+    while [[ "$next_set" = "y" ]]
+    do
+        echo -e "\nGetting generic application info... No.$((set_index+1))"
+
+        # scalerName
+        default=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$set_index'] | .scalerName' $json_file | sed 's:null::g')
+        read -r -p "$(tput setaf 6)Input alamedascaler name [$default]: $(tput sgr 0)" scalerName </dev/tty
+        scalerName=${scalerName:-$default}
+
+        configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].scalerName="%s"' $set_index $scalerName) <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+
+        # clusterName
+        default=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$set_index'] | .clusterName' $json_file | sed 's:null::g')
+        read -r -p "$(tput setaf 6)Input cluster name [$default]: $(tput sgr 0)" clusterName </dev/tty
+        clusterName=${clusterName:-$default}
+
+        configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].clusterName="%s"' $set_index $clusterName) <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+
+        # controller info
+        controller_index=0
+        next_controller="y"
+        while [[ "$next_controller" = "y" ]]
+        do
+            echo -e "\nGetting controller info for $scalerName alamedascaler... No.$((controller_index+1))"
+
+            genericTargetKind=""
+            while [ "$genericTargetKind" != "Deployment" ] && [ "$genericTargetKind" != "DeploymentConfig" ] && [ "$genericTargetKind" != "StatefulSet" ]
+            do
+                default=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$set_index'].controller['$controller_index'] | .genericTargetKind' $json_file | sed 's:null::g')
+                read -r -p "$(tput setaf 6)Input target app kind (Deployment/DeploymentConfig/StatefulSet)[$default]: $(tput sgr 0)" genericTargetKind </dev/tty
+                genericTargetKind=${genericTargetKind:-$default}
+            done
+
+            default=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$set_index'].controller['$controller_index'] | .genericTargetNamespace' $json_file | sed 's:null::g')
+            read -r -p "$(tput setaf 6)Input target app namespace [$default]: $(tput sgr 0)" genericTargetNamespace </dev/tty
+            genericTargetNamespace=${genericTargetNamespace:-$default}
+
+            # Comment out to support remote monitoring alamedascaler
+            # deployment_lists="`kubectl -n ${genericTargetNamespace} get $genericTargetKind -o custom-columns=NAME:.metadata.name --no-headers | xargs`"
+            # if [ "${deployment_lists}" = "" ]; then
+            #     echo -e "\n$(tput setaf 1)Error! Namespace ${genericTargetNamespace} found no $genericTargetKind.$(tput sgr 0)"
+            #     exit 7
+            # fi
+            # echo -e "\nExisting ${genericTargetKind} in namespace ${genericTargetNamespace}: ${deployment_lists}"
+            default=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$set_index'].controller['$controller_index'] | .genericTargetName' $json_file | sed 's:null::g')
+            read -r -p "$(tput setaf 6)Input ${genericTargetKind} name [$default]: $(tput sgr 0)" genericTargetName </dev/tty
+            genericTargetName=${genericTargetName:-$default}
+
+            ## For 4.3-husky, set enableExecution = 'false' per SL
+            enableExecution="false"
+
+            enableHPARecommendation=""
+            while [ "$enableHPARecommendation" != "y" ] && [ "$enableHPARecommendation" != "n" ]
+            do
+                default=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$set_index'].controller['$controller_index'] | .enableHPARecommendation' $json_file | sed 's:null::g')
+                if [ "$default" = "" ]; then
+                    default="y"
+                fi
+                read -r -p "$(tput setaf 6)Do you want to enable HPA recommendation? [default: $default]: $(tput sgr 0)" enableHPARecommendation </dev/tty
+                enableHPARecommendation=${enableHPARecommendation:-$default}
+                enableHPARecommendation=$(echo "$enableHPARecommendation" | tr '[:upper:]' '[:lower:]')
+            done
+
+            if [ "$enableHPARecommendation" = "y" ]; then
+                default=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$set_index'].controller['$controller_index'] | .minReplicas' $json_file | sed 's:null::g')
+                read -r -p "$(tput setaf 6)Input minimum replicas number [$default]: $(tput sgr 0)" minReplicas </dev/tty
+                minReplicas=${minReplicas:-$default}
+
+                case $minReplicas in
+                    ''|*[!0-9]*) echo -e "\n$(tput setaf 1)Error! The minimum replicas number needs to be an integer.$(tput sgr 0)" && exit;;
+                    *) ;;
+                esac
+
+                default=$(./jq -r '.dataAdapterConfigmapForGeneralApplication['$set_index'].controller['$controller_index'] | .maxReplicas' $json_file | sed 's:null::g')
+                read -r -p "$(tput setaf 6)Input maximum replicas number [$default]: $(tput sgr 0)" maxReplicas </dev/tty
+                maxReplicas=${maxReplicas:-$default}
+
+                case $maxReplicas in
+                    ''|*[!0-9]*) echo -e "\n$(tput setaf 1)Error! The maximum replicas number needs to be an integer.$(tput sgr 0)" && exit;;
+                    *) ;;
+                esac
+            else
+                minReplicas="null"
+                maxReplicas="null"
+            fi
+
+            if [ "$clusterName" = "" ] || [ "$genericTargetKind" = "" ] || [ "$genericTargetName" = "" ] || [ "$genericTargetNamespace" = "" ] || [ "$enableExecution" = "" ] || [ "$minReplicas" = "" ] || [ "$maxReplicas" = "" ]; then
+                echo -e "\n$(tput setaf 1)Error! Application info can't be empty.$(tput sgr 0)"
+                exit 7
+            fi
+
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].controller[%s].enableExecution="%s"' $set_index $controller_index $enableExecution) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].controller[%s].genericTargetKind="%s"' $set_index $controller_index $genericTargetKind) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].controller[%s].genericTargetName="%s"' $set_index $controller_index $genericTargetName) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].controller[%s].genericTargetNamespace="%s"' $set_index $controller_index $genericTargetNamespace) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].controller[%s].minReplicas="%s"' $set_index $controller_index $minReplicas) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].controller[%s].maxReplicas="%s"' $set_index $controller_index $maxReplicas) <<<$configStr )
+            configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForGeneralApplication[%s].controller[%s].enableHPARecommendation="%s"' $set_index $controller_index $enableHPARecommendation) <<<$configStr )
+            ./jq -r '.' <<< $configStr > $json_file
+            ((controller_index = controller_index + 1))
+            echo ""
+            sleep 1
+            default="n"
+            read -r -p "$(tput setaf 10)Do you want to add another controller in $scalerName alamedascaler? [default: $default]: $(tput sgr 0)" next_controller </dev/tty
+            next_controller=${next_controller:-$default}
+            while [[ "$next_controller" != "y" ]] && [[ "$next_controller" != "n" ]]
+            do
+                read -r -p "$(tput setaf 10)Do you want to add another controller in $scalerName alamedascaler? [default: $default]: $(tput sgr 0)" next_controller </dev/tty
+                next_controller=${next_controller:-$default}
+            done
+            if [ "$next_controller" = "n" ]; then
+                configStr=$( ./jq -c $(printf 'del(.dataAdapterConfigmapForGeneralApplication[%s].controller[%s:])' $set_index $controller_index) <<<$configStr )
+                ./jq -r '.' <<< $configStr > $json_file
+            fi
+        done
+
+        ((set_index = set_index + 1))
+        echo ""
+        sleep 1
+        default="n"
+        read -r -p "$(tput setaf 10)Do you want to add another generic application? [default: $default]: $(tput sgr 0)" next_set </dev/tty
+        next_set=${next_set:-$default}
+        while [[ "$next_set" != "y" ]] && [[ "$next_set" != "n" ]]
+        do
+            read -r -p "$(tput setaf 10)Do you want to add another generic application? [default: $default]: $(tput sgr 0)" next_set </dev/tty
+            next_set=${next_set:-$default}
+        done
+        if [ "$next_set" = "n" ]; then
+            configStr=$( ./jq -c $(printf 'del(.dataAdapterConfigmapForGeneralApplication[%s:])' $set_index) <<<$configStr )
             ./jq -r '.' <<< $configStr > $json_file
         fi
     done
@@ -311,16 +647,17 @@ get_alamedaservice_full_version()
 {
     alameda_version=`kubectl get alamedaservice --all-namespaces|grep -v 'EXECUTION'|awk '{print $4}'`
     if [ "$alameda_version" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error, failed to get Federator.ai version!$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! Failed to get Federator.ai version!$(tput sgr 0)"
         exit 2
     fi
 }
 
 restart_data_adapter_pod()
 {
+    echo -e "\n$(tput setaf 3)Restarting Federator.ai data adapter...$(tput sgr 0)"
     adapter_pod_name=`kubectl get pods -n $install_namespace -o name |grep "federatorai-data-adapter-"|cut -d '/' -f2`
     if [ "$adapter_pod_name" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error, failed to get Federator.ai data adapter pod name!$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! Failed to get Federator.ai data adapter pod name!$(tput sgr 0)"
         exit 2
     fi
     kubectl delete pod $adapter_pod_name -n $install_namespace
@@ -329,6 +666,7 @@ restart_data_adapter_pod()
         exit 8
     fi
     wait_until_pods_ready $max_wait_pods_ready_time 30 $install_namespace 5
+    echo -e "\n$(tput setaf 3)...Done.$(tput sgr 0)"
 }
 
 check_version()
@@ -379,24 +717,57 @@ prepare_env()
 {
     get_alamedaservice_full_version
 
+    if [ -f "$json_file" ]; then
+        cat $json_file|grep -q "$json_file_version"
+        if [ "$?" != "0" ]; then
+            mv $json_file ${json_file}.old
+            mv $json_file_template ${json_file_template}.old
+        fi
+    fi
+
     if [ ! -f "$json_file" ]; then
         if [ ! -f "$json_file_template" ]; then
             cat > $json_file_template << __EOF__
 {
+  "version": "${json_file_version}",
   "dataAdapterSecret": {
     "datadogAPIKey": "",
     "datadogApplicationKey": ""
   },
-  "dataAdapterConfigmap": [
+  "dataAdapterConfigmapForKafka": [
     {
-      "kafkaConsumerDeploymentName": "",
-      "kafkaConsumerDeploymentNamespace": "",
-      "kafkaConsumerMinimumReplica": "",
-      "kafkaConsumerMaximumReplica": "",
-      "kafkaConsumerGroupName": "",
-      "kafkaConsumerGroupNamespace": "",
-      "kafkaTopicName": "",
-      "kafkaTopicNamespace": ""
+      "scalerName": "",
+      "clusterName": "",
+      "controller": [
+        {
+            "enableExecution": "",
+            "kafkaExporterNamespace": "",
+            "kafkaConsumerGroupKind": "",
+            "kafkaConsumerGroupName": "",
+            "kafkaConsumerGroupNamespace": "",
+            "kafkaTopicName": "",
+            "kafkaConsumerGroupId": "",
+            "kafkaConsumerMinimumReplica": "",
+            "kafkaConsumerMaximumReplica": ""
+        }
+      ]
+    }
+  ],
+  "dataAdapterConfigmapForGeneralApplication": [
+    {
+      "scalerName": "",
+      "clusterName": "",
+      "controller": [
+        {
+            "enableExecution": "",
+            "enableHPARecommendation": "",
+            "genericTargetKind": "",
+            "genericTargetName": "",
+            "genericTargetNamespace": "",
+            "minReplicas": "",
+            "maxReplicas": ""
+        }
+      ]
     }
   ]
 }
@@ -465,7 +836,7 @@ if [ "$?" != "0" ]; then
     exit 1
 fi
 current_server="`echo $result|sed 's/.*at //'|awk '{print $1}'`"
-echo "You are connecting to cluster: $current_server"
+echo "You are connecting to the cluster: $current_server"
 
 install_namespace="`kubectl get pods --all-namespaces |grep "alameda-ai-"|awk '{print $1}'|head -1`"
 if [ "$install_namespace" = "" ];then
@@ -480,22 +851,27 @@ if [ "$alamedaservice_name" = "" ]; then
 fi
 
 json_file="adapter.json"
+json_file_version="v4.3.102"
 json_file_template="adapter.json.tmp"
 
 prepare_env
 
 get_datadog_key
 
-get_kafka_info
+get_general_application_info
 
-patch_alamedaservice
+get_kafka_info
 
 patch_data_adapter_secret
 
-patch_data_adapter_configmap
+## No need to update configmap content for now
+#patch_data_adapter_configmap
+add_alamedascaler_for_generic_app
+add_alamedascaler_for_kafka
 
 restart_data_adapter_pod
 
 echo -e "$(tput setaf 6)\nSetup Federator.ai for Datadog successfully$(tput sgr 0)"
+echo -e "$(tput setaf 6)Yaml files generated are under $file_folder $(tput sgr 0)"
 
 exit 0

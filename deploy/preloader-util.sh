@@ -5,7 +5,6 @@
 #   This script is created for demo purpose.
 #   Usage:
 #       [-p] # Prepare environment
-#       [-x pod autoscaling method] # Specified hpa or vpa as pod autoscaling method 
 #       [-c] # clean environment for preloader test
 #       [-e] # Enable preloader pod
 #       [-r] # Run preloader
@@ -17,6 +16,8 @@
 #   Standalone options:
 #       [-i] # Install Nginx
 #       [-k] # Remove Nginx
+#       [-t replica number] # Nginx default replica number (default:10) [e.g., -t 5]
+#       [-s enable execution] # Enable(default) or disable execution [e.g., -s false]
 #
 #################################################################################################################
 
@@ -26,7 +27,6 @@ show_usage()
 
     Usage:
         [-p] # Prepare environment
-        [-x pod autoscaling method] # Specified hpa or vpa as pod autoscaling method
         [-c] # clean environment for preloader test
         [-e] # Enable preloader pod
         [-r] # Run preloader
@@ -38,6 +38,8 @@ show_usage()
     Standalone options:
         [-i] # Install Nginx
         [-k] # Remove Nginx
+        [-t replica number] # Nginx default replica number (default:10) [e.g., -t 5]
+        [-s enable execution] # Enable(default) or disable execution [e.g., -s false]
 
 __EOF__
     exit 1
@@ -53,7 +55,7 @@ pods_ready()
     -o=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' |egrep -v "\-build|\-deploy"\
       | while read name status _junk; do
           if [ "$status" != "True" ]; then
-            echo "Waiting pod $name in namespace $namespace to be ready..."
+            echo "Waiting for pod $name in namespace $namespace to be ready..."
             return 1
           fi
         done || return 1
@@ -163,13 +165,13 @@ wait_until_data_pump_finish()
         echo "Waiting for data pump (future mode) to finish ..."
         kubectl logs -n $install_namespace $current_preloader_pod_name | grep -q "Completed to loader container future metrics data"
         if [ "$?" = "0" ]; then
-            echo -e "\n$(tput setaf 6)Data pump (future mode) is finished.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 6)The data pump (future mode) is finished.$(tput sgr 0)"
             return 0
         fi
     else #historical mode
         echo "Waiting for data pump to finish ..."
         if [[ "`kubectl logs -n $install_namespace $current_preloader_pod_name | egrep "Succeed to generate pods historical metrics|Succeed to generate nodes historical metrics" | wc -l`" -gt "1" ]]; then
-            echo -e "\n$(tput setaf 6)Data pump is finished.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 6)The data pump is finished.$(tput sgr 0)"
             return 0
         fi
     fi
@@ -177,7 +179,7 @@ wait_until_data_pump_finish()
     sleep "$interval"
   done
 
-  echo -e "\n$(tput setaf 1)Warning!! Waited for $period seconds, but data pump is still running.$(tput sgr 0)"
+  echo -e "\n$(tput setaf 1)Warning!! Waited for $period seconds, but the data pump is still running.$(tput sgr 0)"
   leave_prog
   exit 4
 }
@@ -189,19 +191,25 @@ get_current_preloader_name()
     echo "current_preloader_pod_name = $current_preloader_pod_name"
 }
 
+get_current_executor_name()
+{
+    current_executor_pod_name="`kubectl get pods -n $install_namespace |grep "alameda-executor-"|awk '{print $1}'|head -1`"
+    echo "current_executor_pod_name = $current_executor_pod_name"
+}
+
 delete_all_alamedascaler()
 {
     start=`date +%s`
     echo -e "\n$(tput setaf 6)Deleting old alamedascaler if necessary...$(tput sgr 0)"
-    while read alamedascaler_name alamedascaler_ns
+    while read scaler_name scaler_ns
     do
-        if [ "$alamedascaler_name" = "" ] || [ "$alamedascaler_ns" = "" ]; then
+        if [ "$scaler_name" = "" ] || [ "$scaler_ns" = "" ]; then
            continue
         fi
 
-        kubectl delete alamedascaler $alamedascaler_name -n $alamedascaler_ns
+        kubectl delete alamedascaler $scaler_name -n $scaler_ns
         if [ "$?" != "0" ]; then
-            echo -e "\n$(tput setaf 1)Error in deleting old alamedascaler named $alamedascaler_name in ns $alamedascaler_ns.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error in deleting old alamedascaler named $scaler_name in ns $scaler_ns.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
@@ -219,16 +227,23 @@ wait_for_cluster_status_data_ready()
     influxdb_pod_name="`kubectl get pods -n $install_namespace |grep "alameda-influxdb-"|awk '{print $1}'|head -1`"
     repeat_count="30"
     sleep_interval="20"
+    pass="n"
     for i in $(seq 1 $repeat_count)
     do
-        kubectl exec $influxdb_pod_name -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_cluster_status -execute "select * from pod" 2>/dev/null |grep -q "nginx-app"
+        kubectl exec $influxdb_pod_name -n $install_namespace -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_cluster_status -execute "select * from pod" 2>/dev/null |grep -q "${alamedascaler_name}"
         if [ "$?" != 0 ]; then
             echo "Not ready, keep retrying cluster status..."
             sleep $sleep_interval
         else
+            pass="y"
             break
         fi
     done
+    if [ "$pass" = "n" ]; then
+        echo -e "\n$(tput setaf 1)Error! Failed to find alamedascaler ($alamedascaler_name) status in alameda_cluster_status measurement.$(tput sgr 0)"
+        leave_prog
+        exit 8
+    fi
 
     echo "Done."
     end=`date +%s`
@@ -259,7 +274,7 @@ run_preloader_command()
     sleep 20
     kubectl logs -n $install_namespace $current_preloader_pod_name | grep -i "Start PreLoader agent"
     if [ "$?" != "0" ]; then
-        echo -e "\n$(tput setaf 1)Preloader pod is not running correctly. Please contact support stuff$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Preloader pod is not running correctly. Please contact support staff$(tput sgr 0)"
         leave_prog
         exit 5
     fi
@@ -302,6 +317,8 @@ scale_down_pods()
 {
     echo -e "\n$(tput setaf 6)Scaling down alameda-ai and alameda-ai-dispatcher ...$(tput sgr 0)"
     original_alameda_ai_replicas="`kubectl get deploy alameda-ai -n $install_namespace -o jsonpath='{.spec.replicas}'`"
+    # Bring down federatorai-operator to prevent it start scale down pods automatically
+    kubectl patch deployment federatorai-operator -n $install_namespace -p '{"spec":{"replicas": 0}}'
     kubectl patch deployment alameda-ai -n $install_namespace -p '{"spec":{"replicas": 0}}'
     kubectl patch deployment alameda-ai-dispatcher -n $install_namespace -p '{"spec":{"replicas": 0}}'
     kubectl patch deployment alameda-recommender -n $install_namespace -p '{"spec":{"replicas": 0}}'
@@ -327,6 +344,11 @@ scale_up_pods()
 
     if [ "`kubectl get deploy alameda-recommender -n $install_namespace -o jsonpath='{.spec.replicas}'`" -eq "0" ]; then
         kubectl patch deployment alameda-recommender -n $install_namespace -p '{"spec":{"replicas": 1}}'
+        do_something="y"
+    fi
+
+    if [ "`kubectl get deploy federatorai-operator -n $install_namespace -o jsonpath='{.spec.replicas}'`" -eq "0" ]; then
+        kubectl patch deployment federatorai-operator -n $install_namespace -p '{"spec":{"replicas": 1}}'
         do_something="y"
     fi
 
@@ -362,15 +384,44 @@ reschedule_dispatcher()
 
 }
 
+patch_data_adapter_for_preloader()
+{
+    only_mode="$1"
+    start=`date +%s`
+    echo -e "\n$(tput setaf 6)Updating data adapter (collect metadata only mode to $only_mode) for preloader...$(tput sgr 0)"
+    kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml | grep -E -q "^[[:blank:]]+collect_metadata_only = $only_mode"
+    if [ "$?" != "0" ]; then
+        if [ "$only_mode" = "true" ]; then
+            # Set collect_metadata_only = true
+            kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml |sed "s/collect_metadata_only = false/collect_metadata_only = true/g" |kubectl apply -f -
+        else
+            # Set collect_metadata_only = false
+            kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml |sed "s/collect_metadata_only = true/collect_metadata_only = false/g" |kubectl apply -f -
+        fi
+
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error in updating data adapter to collect_metadata_only = \"$only_mode\" mode.$(tput sgr 0)"
+            leave_prog
+            exit 8
+        fi
+        wait_until_pods_ready 600 30 $install_namespace 5
+    fi
+
+    echo "Done."
+    end=`date +%s`
+    duration=$((end-start))
+    echo "Duration patch_data_adapter_for_preloader = $duration" >> $debug_log
+}
+
 patch_datahub_for_preloader()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Patching datahub for preloader...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Updating datahub for preloader...$(tput sgr 0)"
     kubectl get alamedaservice $alamedaservice_name -n $install_namespace -o yaml|grep "\- name: ALAMEDA_DATAHUB_APIS_METRICS_SOURCE" -A1|grep -q influxdb
     if [ "$?" != "0" ]; then
         kubectl patch alamedaservice $alamedaservice_name -n $install_namespace --type merge --patch '{"spec":{"alamedaDatahub":{"env":[{"name": "ALAMEDA_DATAHUB_APIS_METRICS_SOURCE","value": "influxdb"}]}}}'
         if [ "$?" != "0" ]; then
-            echo -e "\n$(tput setaf 1)Error in patching datahub pod.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error in updating datahub pod.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
@@ -436,7 +487,7 @@ patch_grafana_for_preloader()
         fi
         kubectl exec $influxdb_pod_name -n $install_namespace -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_metric -execute "insert grafana_config preloader=true"
         if [ "$?" != "0" ]; then
-            echo -e "\n$(tput setaf 1)Error! add flag for grafana is failed.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error! Adding flag for grafana failed.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
@@ -462,7 +513,7 @@ patch_grafana_back_to_normal()
         fi
         kubectl exec $influxdb_pod_name -n $install_namespace -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_metric -execute "insert grafana_config preloader=false"
         if [ "$?" != "0" ]; then
-            echo -e "\n$(tput setaf 1)Error! add flag to roll back grafana is failed.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error! Adding flag to roll back grafana failed.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
@@ -477,14 +528,29 @@ verify_metrics_exist()
 {
     start=`date +%s`
     echo -e "\n$(tput setaf 6)Verifying metrics in influxdb ...$(tput sgr 0)"
+    metricsArray=("container_cpu" "container_memory" "namespace_cpu" "namespace_memory" "node_cpu" "node_memory")
+    metrics_required_number=`echo "${#metricsArray[@]}"`
     influxdb_pod_name="`kubectl get pods -n $install_namespace |grep "alameda-influxdb-"|awk '{print $1}'|head -1`"
     metrics_list=$(kubectl exec $influxdb_pod_name -n $install_namespace -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_metric -execute "show measurements")
-    metrics_num=$(echo "$metrics_list"| egrep "application_cpu|application_memory|cluster_cpu|cluster_memory|container_cpu|container_memory|controller_cpu|controller_memory|namespace_cpu|namespace_memory|node_cpu|node_memory" |wc -l)
+    metrics_num_found="0"
+    for i in $(seq 0 $((metrics_required_number-1)))
+    do
+        echo $metrics_list|grep -q "${metricsArray[$i]}"
+        if [ "$?" = "0" ]; then
+            metrics_num_found=$((metrics_num_found+1))
+        fi
+    done
 
-    echo "metrics_num = $metrics_num"
-    if [ "$metrics_num" -lt "12" ]; then
+    if [ "$metrics_num_found" -lt "$metrics_required_number" ]; then
         echo -e "\n$(tput setaf 1)Error! metrics in alameda_metric is not complete.$(tput sgr 0)"
+        echo "=============================="
+        echo "Required metrics number: $metrics_required_number"
+        echo "Required metrics: ${metricsArray[*]}"
+        echo "=============================="
+        echo "Required metrics found = $metrics_num_found"
+        echo "Current metrics:"
         echo "$metrics_list"
+        echo "=============================="
         leave_prog
         exit 8
     fi
@@ -519,10 +585,10 @@ delete_nginx_example()
 new_nginx_example()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Creating new NGINX sample pod ...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Creating a new NGINX sample pod ...$(tput sgr 0)"
 
     if [[ "`kubectl get po -n $nginx_ns 2>/dev/null|grep -v "NAME"|grep "Running"|wc -l`" -gt "0" ]]; then
-        echo "nginx-preloader-sample namespace and pod are already exist."
+        echo "nginx-preloader-sample namespace and pod already exist."
     else
         if [ "$openshift_minor_version" != "" ]; then
             # OpenShift
@@ -543,7 +609,7 @@ new_nginx_example()
                 "name": "${nginx_name}"
             },
             "spec": {
-                "replicas": 1,
+                "replicas": ${replica_number},
                 "selector": {
                     "app": "${nginx_name}",
                     "deploymentconfig": "${nginx_name}"
@@ -582,7 +648,7 @@ new_nginx_example()
                                 {
                                     "limits":
                                         {
-                                        "cpu": "150m",
+                                        "cpu": "200m",
                                         "memory": "400Mi"
                                         },
                                     "requests":
@@ -675,7 +741,7 @@ spec:
   selector:
     matchLabels:
       app: ${nginx_name}
-  replicas: 1
+  replicas: ${replica_number}
   template:
     metadata:
       labels:
@@ -686,13 +752,46 @@ spec:
         image: nginx:1.7.9
         resources:
             limits:
-                cpu: "150m"
+                cpu: "200m"
                 memory: "400Mi"
             requests:
                 cpu: "100m"
                 memory: "50Mi"
         ports:
         - containerPort: 80
+      serviceAccount: ${nginx_name}
+      serviceAccountName: ${nginx_name}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${nginx_name}
+rules:
+- apiGroups:
+  - policy
+  resources:
+  - podsecuritypolicies
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${nginx_name}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ${nginx_name}
+subjects:
+- kind: ServiceAccount
+  name: ${nginx_name}
+  namespace: ${nginx_ns}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${nginx_name}
+  namespace: ${nginx_ns}
 __EOF__
             kubectl create ns $nginx_ns
             kubectl apply -f $nginx_k8s_yaml
@@ -711,27 +810,86 @@ __EOF__
     echo "Duration new_nginx_example = $duration" >> $debug_log
 }
 
+get_datadog_agent_info()
+{
+    while read a b c
+    do
+        dd_namespace=$a
+        dd_key=$b
+        dd_api_secret_name=$c
+        if [ "$dd_namespace" != "" ] && [ "$dd_key" != "" ] && [ "$dd_api_secret_name" != "" ]; then
+           break
+        fi
+    done<<<"$(kubectl get daemonset --all-namespaces -o jsonpath='{range .items[*]}{@.metadata.namespace}{"\t"}{range .spec.template.spec.containers[*]}{.env[?(@.name=="DD_API_KEY")].name}{"\t"}{.env[?(@.name=="DD_API_KEY")].valueFrom.secretKeyRef.name}{"\n"}{end}{"\t"}{end}' 2>/dev/null| grep "DD_API_KEY")"
+
+    if [ "$dd_key" = "" ] || [ "$dd_namespace" = "" ] || [ "$dd_api_secret_name" = "" ]; then
+        return
+    fi
+    dd_api_key="`kubectl get secret -n $dd_namespace $dd_api_secret_name -o jsonpath='{.data.api-key}'`"
+    dd_app_key="`kubectl get secret -n $dd_namespace -o jsonpath='{range .items[*]}{.data.app-key}'`"
+    # Search kube_cluster:$cluster_name key pair
+    for i in $(kubectl describe ds -n default|grep "DD_TAG"|tr " " "\\n")
+    do
+        value=$(echo "$i"|grep "^kube_cluster"|cut -d ":" -f2)
+        if [ "$value" != "" ]; then
+            dd_cluster_name="$value"
+            break
+        fi
+    done
+}
+
+add_dd_tags_to_executor_env()
+{
+    start=`date +%s`
+    kubectl patch alamedaservice $alamedaservice_name -n ${install_namespace} --type merge --patch "{\"spec\":{\"alamedaExecutor\":{\"env\":[{\"name\": \"ALAMEDA_EXECUTOR_CLUSTERNAME\",\"value\": \"$dd_cluster_name\"}]}}}"
+    if [ "$?" != "0" ]; then
+        echo -e "\n$(tput setaf 1)Error! Failed to set ALAMEDA_EXECUTOR_CLUSTERNAME as alamedaExecutor env.$(tput sgr 0)"
+        leave_prog
+        exit 8
+    fi
+
+    echo "Done"
+    end=`date +%s`
+    duration=$((end-start))
+    echo "Duration add_dd_tags_to_executor_env = $duration" >> $debug_log
+}
+
 add_alamedascaler_for_nginx()
 {
     start=`date +%s`
     echo -e "\n$(tput setaf 6)Adding NGINX alamedascaler ...$(tput sgr 0)"
     nginx_alamedascaler_file="nginx_alamedascaler_file"
-    kubectl get alamedascaler -n ${nginx_ns} 2>/dev/null|grep -q "nginx-alamedascaler"
+
+    if [ "$openshift_minor_version" = "" ]; then
+        # K8S
+        kind_type="Deployment"
+    else
+        # OpenShift
+        kind_type="DeploymentConfig"
+    fi
+
+    kubectl get alamedascaler -n ${install_namespace} 2>/dev/null|grep -q "$alamedascaler_name"
     if [ "$?" != "0" ]; then
         cat > ${nginx_alamedascaler_file} << __EOF__
-apiVersion: autoscaling.containers.ai/v1alpha1
+apiVersion: autoscaling.containers.ai/v1alpha2
 kind: AlamedaScaler
 metadata:
-    name: nginx-app
-    namespace: ${nginx_ns}
+    name: ${alamedascaler_name}
+    namespace: ${install_namespace}
 spec:
-    policy: stable
-    enableExecution: false
-    scalingTool:
-        type: ${autoscaling_method}
-    selector:
-        matchLabels:
-            app: ${nginx_name}
+    clusterName: ${dd_cluster_name}
+    controllers:
+    - type: generic
+      enableExecution: ${enable_execution}
+      scaling: ${autoscaling_method}
+      generic:
+        target:
+          namespace: ${nginx_ns}
+          name: ${nginx_name}
+          kind: ${kind_type}
+        hpaParameters:
+          maxReplicas: 40
+          minReplicas: 1
 __EOF__
         kubectl apply -f ${nginx_alamedascaler_file}
         if [ "$?" != "0" ]; then
@@ -809,7 +967,7 @@ cleanup_influxdb_preloader_related_contents()
 check_prediction_status()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Checking prediction status of monitored objects ...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Checking the prediction status of monitored objects ...$(tput sgr 0)"
     influxdb_pod_name="`kubectl get pods -n $install_namespace |grep "alameda-influxdb-"|awk '{print $1}'|head -1`"
     measurements_list="`oc exec alameda-influxdb-54949c7c-jp4lk -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_cluster_status -execute "show measurements"|tail -n+4`"
     for measurement in `echo $measurements_list`
@@ -817,7 +975,7 @@ check_prediction_status()
         record_number="`oc exec $influxdb_pod_name -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_cluster_status -execute "select count(*) from $measurement"|tail -1|awk '{print $NF}'`"
         echo "$measurement = $xx"
         case $future_mode_length in
-                ''|*[!0-9]*) echo -e "\n$(tput setaf 1)future mode length (hour) needs to be integer.$(tput sgr 0)" && show_usage ;;
+                ''|*[!0-9]*) echo -e "\n$(tput setaf 1)future mode length (hour) needs to be an integer.$(tput sgr 0)" && show_usage ;;
                 *) ;;
         esac
 
@@ -833,12 +991,62 @@ check_prediction_status()
     echo "Duration check_prediction_status() = $duration" >> $debug_log
 }
 
+switch_alameda_executor_in_alamedaservice()
+{
+    start=`date +%s`
+    switch_option="$1"
+    get_current_executor_name
+    modified="n"
+    if [ "$current_executor_pod_name" = "" ] && [ "$switch_option" = "on" ]; then
+        # Turn on
+        echo -e "\n$(tput setaf 6)Enabling executor in alamedaservice...$(tput sgr 0)"
+        kubectl patch alamedaservice $alamedaservice_name -n $install_namespace --type merge --patch '{"spec":{"enableExecution": true}}'
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error in enabling executor pod.$(tput sgr 0)"
+            leave_prog
+            exit 8
+        fi
+        modified="y"
+    elif [ "$current_executor_pod_name" != "" ] && [ "$switch_option" = "off" ]; then
+        # Turn off
+        echo -e "\n$(tput setaf 6)Disable executor in alamedaservice...$(tput sgr 0)"
+        kubectl patch alamedaservice $alamedaservice_name -n $install_namespace --type merge --patch '{"spec":{"enableExecution": false}}'
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error in deleting preloader pod.$(tput sgr 0)"
+            leave_prog
+            exit 8
+        fi
+        modified="y"
+    fi
+
+    if [ "$modified" = "y" ]; then
+        echo ""
+        wait_until_pods_ready 600 30 $install_namespace 5
+    fi
+
+    get_current_executor_name
+    if [ "$current_executor_pod_name" = "" ] && [ "$switch_option" = "on" ]; then
+        echo -e "\n$(tput setaf 1)ERROR! Can't find executor pod.$(tput sgr 0)"
+        leave_prog
+        exit 8
+    elif [ "$current_executor_pod_name" != "" ] && [ "$switch_option" = "off" ]; then
+        echo -e "\n$(tput setaf 1)ERROR! Executor pod still exists.$(tput sgr 0)"
+        leave_prog
+        exit 8
+    fi
+
+    echo "Done"
+    end=`date +%s`
+    duration=$((end-start))
+    echo "Duration switch_alameda_executor_in_alamedaservice = $duration" >> $debug_log
+}
+
 enable_preloader_in_alamedaservice()
 {
     start=`date +%s`
     get_current_preloader_name
     if [ "$current_preloader_pod_name" != "" ]; then
-        echo -e "\n$(tput setaf 6)Skip preloader installation due to preloader pod exist.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 6)Skip preloader installation due to preloader pod exists.$(tput sgr 0)"
         echo -e "Deleting preloader pod to renew the pod state..."
         kubectl delete pod -n $install_namespace $current_preloader_pod_name
         if [ "$?" != "0" ]; then
@@ -850,7 +1058,7 @@ enable_preloader_in_alamedaservice()
         echo -e "\n$(tput setaf 6)Enabling preloader in alamedaservice...$(tput sgr 0)"
         kubectl patch alamedaservice $alamedaservice_name -n $install_namespace --type merge --patch '{"spec":{"enablePreloader": true}}'
         if [ "$?" != "0" ]; then
-            echo -e "\n$(tput setaf 1)Error in patching alamedaservice $alamedaservice_name.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error in updating alamedaservice $alamedaservice_name.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
@@ -880,7 +1088,7 @@ add_svc_for_nginx()
         # Check if svc already exist
         kubectl get svc nginx-svc -n $nginx_ns &>/dev/null
         if [ "$?" = "0" ]; then
-            echo "svc already exist in namespace $nginx_ns"
+            echo "svc already exists in namespace $nginx_ns"
             echo "Done"
             return
         fi
@@ -928,7 +1136,7 @@ disable_preloader_in_alamedaservice()
     if [ "$current_preloader_pod_name" != "" ]; then
         kubectl patch alamedaservice $alamedaservice_name -n $install_namespace  --type merge --patch '{"spec":{"enablePreloader": false}}'
         if [ "$?" != "0" ]; then
-            echo -e "\n$(tput setaf 1)Error in patching alamedaservice $alamedaservice_name.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error in updating alamedaservice $alamedaservice_name.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
@@ -949,6 +1157,17 @@ disable_preloader_in_alamedaservice()
     echo "Duration disable_preloader_in_alamedaservice = $duration" >> $debug_log
 }
 
+get_cluster_name()
+{
+    cluster_name=`kubectl get cm cluster-info -n default -o yaml 2>/dev/null|grep uid|awk '{print $2}'`
+    if [ "$cluster_name" = "" ];then
+        cluster_name=`kubectl get cm cluster-info -n kube-public -o yaml 2>/dev/null|grep uid|awk '{print $2}'`
+        if [ "$cluster_name" = "" ];then
+            cluster_name=`kubectl get cm cluster-info -n kube-service-catalog’ -o yaml 2>/dev/null|grep uid|awk '{print $2}'`
+        fi
+    fi
+}
+
 clean_environment_operations()
 {
     cleanup_influxdb_preloader_related_contents
@@ -961,7 +1180,7 @@ if [ "$#" -eq "0" ]; then
     exit
 fi
 
-while getopts "f:x:ecpvrdhikn:" o; do
+while getopts "f:n:t:x:cdehikprv" o; do
     case "${o}" in
         p)
             prepare_environment="y"
@@ -985,10 +1204,18 @@ while getopts "f:x:ecpvrdhikn:" o; do
             future_mode_enabled="y"
             f_arg=${OPTARG}
             ;;
-        x)
-            autoscaling_specified="y"
-            x_arg=${OPTARG}
+        t)
+            replica_num_specified="y"
+            t_arg=${OPTARG}
             ;;
+        s)
+            enable_execution_specified="y"
+            s_arg=${OPTARG}
+            ;;
+        # x)
+        #     autoscaling_specified="y"
+        #     x_arg=${OPTARG}
+        #     ;;
         n)
             nginx_name_specified="y"
             n_arg=${OPTARG}
@@ -1004,7 +1231,7 @@ while getopts "f:x:ecpvrdhikn:" o; do
             exit
             ;;
         *)
-            echo "Warning! wrong paramter, ignore it."
+            echo "Warning! wrong parameter, ignore it."
             ;;
     esac
 done
@@ -1012,19 +1239,40 @@ done
 if [ "$future_mode_enabled" = "y" ]; then
     future_mode_length=$f_arg
     case $future_mode_length in
-        ''|*[!0-9]*) echo -e "\n$(tput setaf 1)future mode length (hour) needs to be integer.$(tput sgr 0)" && show_usage ;;
+        ''|*[!0-9]*) echo -e "\n$(tput setaf 1)future mode length (hour) needs to be an integer.$(tput sgr 0)" && show_usage ;;
         *) ;;
     esac
 fi
 
-if [ "$autoscaling_specified" = "y" ]; then
-    autoscaling_method=$x_arg
-    if [ "$autoscaling_method" != "vpa" ] && [ "$autoscaling_method" != "hpa" ]; then
-        echo -e "\n$(tput setaf 1) Pod autoscaling method needs to be \"vpa\" or \"hpa\".$(tput sgr 0)" && show_usage
+if [ "$replica_num_specified" = "y" ]; then
+    replica_number=$t_arg
+    case $replica_number in
+        ''|*[!0-9]*) echo -e "\n$(tput setaf 1)replica number needs to be an integer.$(tput sgr 0)" && show_usage ;;
+        *) ;;
+    esac
+else
+    # default replica
+    replica_number="5"
+fi
+
+if [ "$enable_execution_specified" = "y" ]; then
+    enable_execution=$s_arg
+    if [ "$enable_execution" != "true" ] && [ "$enable_execution" != "false" ]; then
+        echo -e "\n$(tput setaf 1) Enable execution value needs to be \"true\" or \"false\".$(tput sgr 0)" && show_usage
     fi
 else
-    autoscaling_method="hpa"
+    enable_execution="true"
 fi
+
+# if [ "$autoscaling_specified" = "y" ]; then
+#     autoscaling_method=$x_arg
+#     if [ "$autoscaling_method" != "vpa" ] && [ "$autoscaling_method" != "hpa" ]; then
+#         echo -e "\n$(tput setaf 1) Pod autoscaling method needs to be \"vpa\" or \"hpa\".$(tput sgr 0)" && show_usage
+#     fi
+# else
+#     autoscaling_method="hpa"
+# fi
+autoscaling_method="hpa"
 
 if [ "$nginx_name_specified" = "y" ]; then
     nginx_name=$n_arg
@@ -1038,7 +1286,7 @@ fi
 
 kubectl version|grep -q "^Server"
 if [ "$?" != "0" ];then
-    echo -e "\nPlease login to kubernetes first."
+    echo -e "\nPlease login to Kubernetes first."
     exit
 fi
 
@@ -1046,7 +1294,7 @@ echo "Checking environment version..."
 check_version
 echo "...Passed"
 
-install_namespace="`kubectl get pods --all-namespaces |grep "alameda-ai-"|awk '{print $1}'|head -1`"
+install_namespace="`kubectl get pods --all-namespaces |grep "alameda-datahub-"|awk '{print $1}'|head -1`"
 
 if [ "$install_namespace" = "" ];then
     echo -e "\n$(tput setaf 1)Error! Please Install Federatorai before running this script.$(tput sgr 0)"
@@ -1062,6 +1310,7 @@ fi
 
 file_folder="/tmp/preloader"
 nginx_ns="nginx-preloader-sample"
+alamedascaler_name="nginx-alamedascaler"
 
 debug_log="debug.log"
 
@@ -1071,13 +1320,27 @@ current_location=`pwd`
 cd $file_folder
 echo "Receiving command '$0 $@'" >> $debug_log
 
+## With standalone install/remove nginx action, we do not need get_datadog_agent_info
+if [ "$install_nginx" != "y" -a "$remove_nginx" != "y" ]; then
+    get_datadog_agent_info
+    if [ "$dd_cluster_name" = "" ]; then
+        echo -e "\n$(tput setaf 1)Error! Failed to auto-discover DD_TAGS value (kube_cluster:\$cluster_name) in Datadog DaemonSet env variable.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Please help to set up cluster name accordingly.$(tput sgr 0)"
+        exit
+    else
+        echo -e "$(tput setaf 3)Use \"$dd_cluster_name\" as the cluster name.$(tput sgr 0)"
+    fi
+fi
+
 if [ "$prepare_environment" = "y" ]; then
     delete_all_alamedascaler
     new_nginx_example
     patch_datahub_for_preloader
     patch_grafana_for_preloader
+    patch_data_adapter_for_preloader "true"
     check_influxdb_retention
     add_alamedascaler_for_nginx
+    add_dd_tags_to_executor_env
 fi
 
 if [ "$clean_environment" = "y" ]; then
@@ -1085,6 +1348,9 @@ if [ "$clean_environment" = "y" ]; then
 fi
 
 if [ "$enable_preloader" = "y" ]; then
+    if [ "$enable_execution" = "true" ]; then
+        switch_alameda_executor_in_alamedaservice "on"
+    fi
     enable_preloader_in_alamedaservice
 fi
 
@@ -1102,6 +1368,7 @@ if [ "$future_mode_enabled" = "y" ]; then
 fi
 
 if [ "$disable_preloader" = "y" ]; then
+    switch_alameda_executor_in_alamedaservice "off"
     disable_preloader_in_alamedaservice
 fi
 
@@ -1110,6 +1377,7 @@ if [ "$revert_environment" = "y" ]; then
     delete_nginx_example
     patch_datahub_back_to_normal
     patch_grafana_back_to_normal
+    patch_data_adapter_for_preloader "false"
     clean_environment_operations
 fi
 

@@ -48,7 +48,7 @@ pods_ready()
     -o=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' |egrep -v "\-build|\-deploy"\
       | while read name status _junk; do
           if [ "$status" != "True" ]; then
-            echo "Waiting pod $name in namespace $namespace to be ready..."
+            echo "Waiting for pod $name in namespace $namespace to be ready..."
             return 1
           fi
         done || return 1
@@ -150,10 +150,10 @@ get_k8s_rest_api_node_port()
 {
     #K8S
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Getting REST API service NodePort...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Getting the REST API service NodePort...$(tput sgr 0)"
     https_node_port="`kubectl get svc -n $install_namespace |grep -E -o "5056:.{0,22}"|cut -d '/' -f1|cut -d ':' -f2`"
     if [ "$https_node_port" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! Can't find NodePort of REST API service.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! Can't find NodePort of the REST API service.$(tput sgr 0)"
         leave_prog
         exit 8 
         
@@ -167,12 +167,12 @@ get_k8s_rest_api_node_port()
 check_rest_api_url()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Checking REST API URL...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Checking the REST API URL...$(tput sgr 0)"
     if [ "$openshift_minor_version" != "" ]; then
         # OpenShift
         api_url="`oc get route -n $install_namespace | grep "federatorai-rest"|awk '{print $2}'`"
         if [ "$api_url" = "" ]; then
-            echo -e "\n$(tput setaf 1)Error! Can't get REST API URL.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error! Can't get the REST API URL.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
@@ -185,7 +185,7 @@ check_rest_api_url()
             api_url="https://$rest_ip:$https_node_port"
             echo "api_url = $api_url"
         else
-            echo -e "\n$(tput setaf 1)Error! Please input correct REST API service IP.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error! Please input the correct REST API service IP.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
@@ -215,7 +215,7 @@ rest_api_login()
 check_api_url()
 {
     if [ "$api_url" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! REST API URL is empty.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! The REST API URL is empty.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
@@ -224,7 +224,7 @@ check_api_url()
 check_user_token()
 {
     if [ "$access_token" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! User token is empty.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! The user token is empty.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
@@ -233,7 +233,7 @@ check_user_token()
 check_cluster_name()
 {
     if [ "$cluster_name" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! cluster name is empty.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! The cluster name is empty.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
@@ -242,7 +242,7 @@ check_cluster_name()
 rest_api_get_cluster_name()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Getting cluster name...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Getting the cluster name...$(tput sgr 0)"
     cluster_name=`curl -sS -k -X GET "$api_url/apis/v1/resources/clusters" -H "accept: application/json" -H "Authorization: Bearer $access_token" |jq '.data[].name'|tr -d "\""`
     check_cluster_name
 
@@ -256,13 +256,13 @@ rest_api_get_cluster_name()
 rest_api_get_pod_planning()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Getting planning for pod ($target_pod_name) in ns ($target_namespace)...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Getting planning for the pod ($target_pod_name) in ns ($target_namespace)...$(tput sgr 0)"
     interval_start_time="$start"
     interval_end_time=$(($interval_start_time + 3599)) #59min59sec
     granularity="3600"
     type="recommendation"
 
-    planning_values=`curl -sS -k -X GET "$api_url/apis/v1/plannings/clusters/$cluster_name/namespaces/$target_namespace/pods?granularity=$granularity&type=$type&names=$target_pod_name&limit=1&order=desc&startTime=$interval_start_time&endTime=$interval_end_time" -H "accept: application/json" -H "Authorization: Bearer $access_token" |jq '.plannings[].containerPlannings[0]|"\(.limitPlannings.CPU_USAGE_SECONDS_PERCENTAGE[].numValue) \(.requestPlannings.CPU_USAGE_SECONDS_PERCENTAGE[].numValue) \(.limitPlannings.MEMORY_USAGE_BYTES[].numValue) \(.requestPlannings.MEMORY_USAGE_BYTES[].numValue)"'|tr -d "\""`
+    planning_values=`curl -sS -k -X GET "$api_url/apis/v1/plannings/clusters/$cluster_name/namespaces/$target_namespace/pods?granularity=$granularity&type=$type&names=$target_pod_name&limit=1&order=desc&startTime=$interval_start_time&endTime=$interval_end_time" -H "accept: application/json" -H "Authorization: Bearer $access_token" |jq ".plannings[].containerPlannings[0]|\"\(.limitPlannings.${query_cpu_string}[].numValue) \(.requestPlannings.${query_cpu_string}[].numValue) \(.limitPlannings.${query_memory_string}[].numValue) \(.requestPlannings.${query_memory_string}[].numValue)\""|tr -d "\""`
     limits_pod_cpu="`echo $planning_values |awk '{print $1}'`"
     requests_pod_cpu="`echo $planning_values |awk '{print $2}'`"
     limits_pod_memory="`echo $planning_values |awk '{print $3}'`"
@@ -289,7 +289,7 @@ rest_api_get_pod_planning()
 rest_api_get_controller_planning()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Getting planning for controller ($owner_reference_name) in ns ($target_namespace)...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Getting planning for the controller ($owner_reference_name) in ns ($target_namespace)...$(tput sgr 0)"
     interval_start_time="$start"
     interval_end_time=$(($interval_start_time + 3599)) #59min59sec
     granularity="3600"
@@ -297,10 +297,10 @@ rest_api_get_controller_planning()
 
     if [ "$openshift_minor_version" != "" ]; then
         # OpenShift
-        planning_values=`curl -sS -k -X GET "$api_url/apis/v1/plannings/clusters/$cluster_name/namespaces/$target_namespace/deploymentconfigs?granularity=$granularity&type=$type&names=$owner_reference_name&limit=1&order=desc&startTime=$interval_start_time&endTime=$interval_end_time" -H "accept: application/json" -H "Authorization: Bearer $access_token"|jq '.plannings[].plannings[0]|"\(.limitPlannings.CPU_USAGE_SECONDS_PERCENTAGE[].numValue) \(.requestPlannings.CPU_USAGE_SECONDS_PERCENTAGE[].numValue) \(.limitPlannings.MEMORY_USAGE_BYTES[].numValue) \(.requestPlannings.MEMORY_USAGE_BYTES[].numValue)"'|tr -d "\""`
+        planning_values=`curl -sS -k -X GET "$api_url/apis/v1/plannings/clusters/$cluster_name/namespaces/$target_namespace/deploymentconfigs?granularity=$granularity&type=$type&names=$owner_reference_name&limit=1&order=desc&startTime=$interval_start_time&endTime=$interval_end_time" -H "accept: application/json" -H "Authorization: Bearer $access_token"|jq ".plannings[].plannings[0]|\"\(.limitPlannings.${query_cpu_string}[].numValue) \(.requestPlannings.${query_cpu_string}[].numValue) \(.limitPlannings.${query_memory_string}[].numValue) \(.requestPlannings.${query_memory_string}[].numValue)\""|tr -d "\""`
     else
         # K8S
-        planning_values=`curl -sS -k -X GET "$api_url/apis/v1/plannings/clusters/$cluster_name/namespaces/$target_namespace/deployments?granularity=$granularity&type=$type&names=$owner_reference_name&limit=1&order=desc&startTime=$interval_start_time&endTime=$interval_end_time" -H "accept: application/json" -H "Authorization: Bearer $access_token"|jq '.plannings[].plannings[0]|"\(.limitPlannings.CPU_USAGE_SECONDS_PERCENTAGE[].numValue) \(.requestPlannings.CPU_USAGE_SECONDS_PERCENTAGE[].numValue) \(.limitPlannings.MEMORY_USAGE_BYTES[].numValue) \(.requestPlannings.MEMORY_USAGE_BYTES[].numValue)"'|tr -d "\""`
+        planning_values=`curl -sS -k -X GET "$api_url/apis/v1/plannings/clusters/$cluster_name/namespaces/$target_namespace/deployments?granularity=$granularity&type=$type&names=$owner_reference_name&limit=1&order=desc&startTime=$interval_start_time&endTime=$interval_end_time" -H "accept: application/json" -H "Authorization: Bearer $access_token"|jq ".plannings[].plannings[0]|\"\(.limitPlannings.${query_cpu_string}[].numValue) \(.requestPlannings.${query_cpu_string}[].numValue) \(.limitPlannings.${query_memory_string}[].numValue) \(.requestPlannings.${query_memory_string}[].numValue)\""|tr -d "\""`
     fi
 
     replica_number="`kubectl get $owner_reference_kind $owner_reference_name -n $target_namespace -o json|jq '.spec.replicas'`"
@@ -344,13 +344,13 @@ rest_api_get_controller_planning()
 rest_api_get_namespace_planning()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Getting planning for namespace ($target_namespace)...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Getting planning for the namespace ($target_namespace)...$(tput sgr 0)"
     interval_start_time="$start"
     interval_end_time=$(($interval_start_time + 3599)) #59min59sec
     granularity="3600"
     type="recommendation"
 
-    planning_values=`curl -sS -k -X GET "$api_url/apis/v1/plannings/clusters/$cluster_name/namespaces/$target_namespace?granularity=$granularity&type=$type&limit=1&order=desc&startTime=$interval_start_time&endTime=$interval_end_time" -H "accept: application/json" -H "Authorization: Bearer $access_token" |jq '.plannings[].plannings[0]|"\(.limitPlannings.CPU_USAGE_SECONDS_PERCENTAGE[].numValue) \(.requestPlannings.CPU_USAGE_SECONDS_PERCENTAGE[].numValue) \(.limitPlannings.MEMORY_USAGE_BYTES[].numValue) \(.requestPlannings.MEMORY_USAGE_BYTES[].numValue)"'|tr -d "\""`
+    planning_values=`curl -sS -k -X GET "$api_url/apis/v1/plannings/clusters/$cluster_name/namespaces/$target_namespace?granularity=$granularity&type=$type&limit=1&order=desc&startTime=$interval_start_time&endTime=$interval_end_time" -H "accept: application/json" -H "Authorization: Bearer $access_token" |jq ".plannings[].plannings[0]|\"\(.limitPlannings.${query_cpu_string}[].numValue) \(.requestPlannings.${query_cpu_string}[].numValue) \(.limitPlannings.${query_memory_string}[].numValue) \(.requestPlannings.${query_memory_string}[].numValue)\""|tr -d "\""`
     limits_ns_cpu="`echo $planning_values |awk '{print $1}'`"
     requests_ns_cpu="`echo $planning_values |awk '{print $2}'`"
     limits_ns_memory="`echo $planning_values |awk '{print $3}'`"
@@ -384,6 +384,21 @@ get_needed_info()
     fi
     if [ "$do_controller_related" != "" ]; then
         get_controller_info_from_controller
+    fi
+    check_federatorai_version
+}
+
+check_federatorai_version()
+{
+    kubectl get alamedaservices --all-namespaces -o jsonpath='{.items[].spec.version}' 2>/dev/null|grep -q "4.2"
+    if [ "$?" = "0" ]; then
+        # 4.2 version
+        query_cpu_string="CPU_USAGE_SECONDS_PERCENTAGE"
+        query_memory_string="MEMORY_USAGE_BYTES"
+    else
+        # 4.3 or later
+        query_cpu_string="CPU_MILLICORES_USAGE"
+        query_memory_string="MEMORY_BYTES_USAGE"
     fi
 }
 
@@ -503,7 +518,7 @@ check_support_controller()
 generate_controller_patch()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Generating controller patch...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Generating controller update...$(tput sgr 0)"
 
     if [ "$limits_pod_cpu" = "" ] || [ "$requests_pod_cpu" = "" ] || [ "$limits_pod_memory" = "" ] || [ "$requests_pod_memory" = "" ]; then
         echo -e "\n$(tput setaf 1)Error! Please specify either --get-pod-planning or --get-controller-planning before --generate-controller-patch option.$(tput sgr 0)"
@@ -532,7 +547,7 @@ spec:
               memory: ${limits_pod_memory}
 __EOF__
 
-    echo "Patch file \"${controller_patch_yaml}\" is generated under $file_folder"
+    echo "Update file \"${controller_patch_yaml}\" is generated under $file_folder"
     echo "Done"
     end=`date +%s`
     duration=$((end-start))
@@ -542,7 +557,7 @@ __EOF__
 generate_namespace_quotas_patch()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Generating namespace patch...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Generating namespace update...$(tput sgr 0)"
 
     if [ "$limits_ns_cpu" = "" ] || [ "$requests_ns_cpu" = "" ] || [ "$limits_ns_memory" = "" ] || [ "$requests_ns_memory" = "" ]; then
         echo "Calling 'get namespace planning' first..."
@@ -562,7 +577,7 @@ spec:
     limits.memory: ${limits_ns_memory}
 __EOF__
 
-    echo "Patch file \"${namespace_patch_yaml}\" is generated under $file_folder"
+    echo "Update file \"${namespace_patch_yaml}\" is generated under $file_folder"
     echo "Done"
     end=`date +%s`
     duration=$((end-start))
@@ -572,17 +587,17 @@ __EOF__
 apply_controller_patch()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Applying controller patch...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Applying the controller update...$(tput sgr 0)"
 
     if [ ! -f "$controller_patch_path" ]; then
-        echo -e "\n$(tput setaf 1)Error! Patch file doesn't exist. Need to run --generate-controller-patch function first.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! Update file doesn't exist. Need to run --generate-controller-patch function first.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
 
     kubectl patch $owner_reference_kind $owner_reference_name -n $target_namespace --type merge --patch "$(cat $controller_patch_yaml)"
     if [ "$?" != "0" ]; then
-        echo -e "\n$(tput setaf 1)Error in patching $owner_reference_kind $owner_reference_name in namespace $target_namespace.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error in updating $owner_reference_kind $owner_reference_name in namespace $target_namespace.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
@@ -600,10 +615,10 @@ apply_controller_patch()
 apply_namespace_quotas_patch()
 {
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Applying namespace quotas patch...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Applying the namespace quotas update...$(tput sgr 0)"
 
     if [ ! -f "$namespace_patch_path" ]; then
-        echo -e "\n$(tput setaf 1)Error! Patch file doesn't exist. Need to run --generate-namespace-quota-patch function first.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)Error! Update file doesn't exist. Need to run --generate-namespace-quota-patch function first.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
@@ -753,7 +768,7 @@ while getopts "h-:" o; do
             show_usage
             ;;
         *)
-            echo -e "\n$(tput setaf 1)Error! wrong paramter.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error! wrong parameter.$(tput sgr 0)"
             exit 5
             ;;
     esac
@@ -806,7 +821,7 @@ echo "target_controller_name = $target_controller_name"
 
 kubectl version|grep -q "^Server"
 if [ "$?" != "0" ];then
-    echo -e "\nPlease login to kubernetes first."
+    echo -e "\nPlease login to Kubernetes first."
     exit
 fi
 

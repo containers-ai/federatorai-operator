@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 
+show_usage()
+{
+    cat << __EOF__
+
+    Usage:
+        a. Online (Interactive mode)
+           bash $0
+        b. Offline mode
+           bash $0 --offline-mode
+
+__EOF__
+    exit 1
+}
+
 remove_containersai_crds()
 {
     containersai_crd_list=`kubectl get crd -o name | grep containers.ai 2>/dev/null`
@@ -49,14 +63,9 @@ download_operator_yaml_if_needed()
         fi
     done
 
-    tag_without_v="${tag_number:1}"
-
-    if [ "$installed_namespace" != "" ]; then
-        sed -i "s/ubi:.*/ubi:${tag_number}/g" 03*.yaml
-        # for namespace
-        sed -i "s/name:.*/name: ${installed_namespace}/g" 00*.yaml
-        sed -i "s/namespace:.*/namespace: ${installed_namespace}/g" 01*.yaml 03*.yaml 05*.yaml 06*.yaml 07*.yaml
-    fi
+    # for namespace
+    sed -i "s/name:.*/name: ${installed_namespace}/g" 00*.yaml
+    sed -i "s/namespace:.*/namespace: ${installed_namespace}/g" 01*.yaml 03*.yaml 05*.yaml 06*.yaml 07*.yaml
 
 }
 
@@ -83,7 +92,7 @@ wait_until_namespace_removed()
     # check if namespace still exist
     kubectl get ns "$installed_namespace" 2>/dev/null |grep -q "$installed_namespace"
     if [ "$?" != "0" ]; then
-        echo -e "\nNamespace $installed_namespace is removed successfully."
+        echo -e "\n$(tput setaf 6)Namespace $installed_namespace is removed successfully.$(tput sgr 0)"
         return 0
     else
         echo "Waiting for the namespace to be removed..."
@@ -102,44 +111,94 @@ if [ "$?" != "0" ];then
     exit
 fi
 
-file_folder="/tmp/uninstall-op"
-rm -rf $file_folder
-mkdir -p $file_folder
-current_location=`pwd`
-cd $file_folder
+operator_folder="operator"
 
-echo -e "$(tput setaf 3)\n----------------------------------------"
-echo -e "Starting remove Federator.ai product"
-echo -e "----------------------------------------\n$(tput sgr 0)"
-
-while [[ "$info_correct" != "y" ]] && [[ "$info_correct" != "Y" ]]
-do
-    # init variables
-    tag_number=""
-
-    read -r -p "$(tput setaf 2)Please input your Federator.ai Operator tag:$(tput sgr 0) " tag_number </dev/tty
-
-    echo -e "\n----------------------------------------"
-    echo "Your tag number = $tag_number"
-    echo "----------------------------------------"
-
-    default="y"
-    read -r -p "$(tput setaf 2)Is the above information correct? [default: y]: $(tput sgr 0)" info_correct </dev/tty
-    info_correct=${info_correct:-$default}
+while getopts "h-:" o; do
+    case "${o}" in
+        -)
+            case "${OPTARG}" in
+                offline-mode)
+                    offline_mode="y"
+                    ;;
+                help)
+                    show_usage
+                    ;;
+                *)
+                    echo -e "\n$(tput setaf 1)Error! Unknown option --${OPTARG}$(tput sgr 0)"
+                    exit
+                    ;;
+            esac;;
+        h)
+            show_usage
+            ;;
+        *)
+            echo -e "\n$(tput setaf 1)Error! wrong paramter.$(tput sgr 0)"
+            exit 5
+            ;;
+    esac
 done
 
-installed_namespace="`kubectl get deployment --all-namespaces|grep "federatorai-operator"|awk '{print $1}'`"
+installed_namespace="`kubectl get pods --all-namespaces |egrep "alameda-ai-|federatorai-operator-"|awk '{print $1}'|head -1`"
 if [ "$installed_namespace" = "" ]; then
-    echo -e "\nInstalled_namespace is empty. Federator.ai operator doesn't exist in system."
+    echo -e "\nInstalled_namespace is empty. Federator.ai build doesn't exist in system."
     exit
 fi
 
-download_operator_yaml_if_needed
+echo -e "$(tput setaf 3)\n----------------------------------------"
+echo -e "Starting to remove the Federator.ai product"
+echo -e "----------------------------------------\n$(tput sgr 0)"
 
-remove_all_alamedaservice
+if [ "$offline_mode" = "y" ]; then
+    # Check if script ran under offline package folder
+    if [ ! -f "../$operator_folder/00-namespace.yaml" ]; then
+        echo -e "\n$(tput setaf 1)Error! Failed to locate offline operator yaml files$(tput sgr 0)"
+        echo "Please make sure you extract the offline install package and execute uninstall.sh under scripts folder.$(tput sgr 0)"
+        exit 3
+    fi
 
-remove_operator_yaml
+    remove_all_alamedaservice
+
+    cd ../$operator_folder
+    sed -i "s/name: federatorai/name: ${installed_namespace}/g" 00*.yaml
+    sed -i "s/namespace: federatorai/namespace: ${installed_namespace}/g" 01*.yaml 03*.yaml 05*.yaml 06*.yaml 07*.yaml
+
+    for yaml_file in `ls ../$operator_folder/[0-9]*yaml|sort -n -r`
+    do
+        echo -e "$(tput setaf 2)\nDeleting $yaml_file ...$(tput sgr 0)"
+        kubectl delete -f $yaml_file
+        if [ "$?" != "0" ]; then
+            echo -e "$(tput setaf 1)Error in removing $yaml_file$(tput sgr 0)"
+        fi
+    done
+    cd - > /dev/null
+else
+    file_folder="/tmp/uninstall-op"
+    rm -rf $file_folder
+    mkdir -p $file_folder
+    current_location=`pwd`
+    cd $file_folder
+
+    while [[ "$info_correct" != "y" ]] && [[ "$info_correct" != "Y" ]]
+    do
+        # init variables
+        tag_number=""
+
+        read -r -p "$(tput setaf 2)Please input your Federator.ai Operator tag:$(tput sgr 0) " tag_number </dev/tty
+
+        echo -e "\n----------------------------------------"
+        echo "Your tag number = $tag_number"
+        echo "----------------------------------------"
+
+        default="y"
+        read -r -p "$(tput setaf 2)Is the above information correct? [default: y]: $(tput sgr 0)" info_correct </dev/tty
+        info_correct=${info_correct:-$default}
+    done
+
+    download_operator_yaml_if_needed
+    remove_all_alamedaservice
+    remove_operator_yaml
+    cd - > /dev/null
+fi
 
 wait_until_namespace_removed 900 60
-
 remove_containersai_crds

@@ -108,7 +108,7 @@ while getopts "f:h" o; do
             exit
             ;;
         *)
-            echo -e "\n$(tput setaf 1)Error! wrong paramter.$(tput sgr 0)"
+            echo -e "\n$(tput setaf 1)Error! wrong parameter.$(tput sgr 0)"
             show_usage
             exit 5
     esac
@@ -131,7 +131,7 @@ fi
 
 kubectl version|grep -q "^Server"
 if [ "$?" != "0" ];then
-    echo -e "\nPlease login to kubernetes first."
+    echo -e "\nPlease login to Kubernetes first."
     exit
 fi
 
