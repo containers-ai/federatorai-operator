@@ -212,6 +212,51 @@ __EOF__
     echo -e "\n$(tput setaf 3)...Done.$(tput sgr 0)"
 }
 
+add_alamedascaler_for_cluster()
+{
+    if [ "$configure_cluster" != "y" ]; then
+        echo -e "\n$(tput setaf 3)Skipping cluster alamedascaler setting....$(tput sgr 0)"
+        return
+    fi
+
+    echo -e "\n$(tput setaf 3)Adding alamedascaler for cluster...$(tput sgr 0)"
+
+    scaler_index=0
+    scaler_count=$(./jq -r '.dataAdapterConfigmapForCluster | length' $json_file)
+    fileArray=()
+    while [[ $scaler_index -lt $scaler_count ]]
+    do
+        scaler_name=$(./jq -r '.dataAdapterConfigmapForCluster['$scaler_index'] | .scalerName' $json_file)
+        yaml_name="${scaler_name}.yaml"
+        clusterName=$(./jq -r '.dataAdapterConfigmapForCluster['$scaler_index'] | .clusterName' $json_file)
+
+        cat > $file_folder/$yaml_name << __EOF__
+apiVersion: autoscaling.containers.ai/v1alpha2
+kind: AlamedaScaler
+metadata:
+  name: ${scaler_name}
+  namespace: ${install_namespace}
+spec:
+  clusterName: ${clusterName}
+__EOF__
+
+        fileArray+=( "$file_folder/$yaml_name" )
+        ((scaler_index = scaler_index + 1))
+    done
+
+    for file_path in "${fileArray[@]}"
+    do
+        kubectl apply -f $file_path
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error! Failed to apply cluster alamedascaler file $file_path $(tput sgr 0)"
+            echo -e "$(tput setaf 1)Please review file content.$(tput sgr 0)"
+            exit 1
+        fi
+    done
+
+    echo -e "\n$(tput setaf 3)...Done.$(tput sgr 0)"
+}
+
 patch_data_adapter_configmap()
 {
     echo -e "\n$(tput setaf 3)Updating Federator.ai data adapter configmap...$(tput sgr 0)"
@@ -643,6 +688,60 @@ get_general_application_info()
     done
 }
 
+get_cluster_info()
+{
+    default="y"
+    echo ""
+    read -r -p "$(tput setaf 3)Do you want to configure alamedascaler for cluster? [default: $default]: $(tput sgr 0): " configure_cluster </dev/tty
+    configure_cluster=${configure_cluster:-$default}
+
+    if [ "$configure_cluster" != "y" ]; then
+        configStr=$( ./jq -c 'del(.dataAdapterConfigmapForCluster[0:])' <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+        return
+    fi
+
+    set_index=0
+    next_set="y"
+
+    while [[ "$next_set" = "y" ]]
+    do
+        echo -e "\nGetting cluster info... No.$((set_index+1))"
+
+        # scalerName
+        default=$(./jq -r '.dataAdapterConfigmapForCluster['$set_index'] | .scalerName' $json_file | sed 's:null::g')
+        read -r -p "$(tput setaf 6)Input alamedascaler name [$default]: $(tput sgr 0)" scalerName </dev/tty
+        scalerName=${scalerName:-$default}
+
+        configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForCluster[%s].scalerName="%s"' $set_index $scalerName) <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+
+        # clusterName
+        default=$(./jq -r '.dataAdapterConfigmapForCluster['$set_index'] | .clusterName' $json_file | sed 's:null::g')
+        read -r -p "$(tput setaf 6)Input cluster name [$default]: $(tput sgr 0)" clusterName </dev/tty
+        clusterName=${clusterName:-$default}
+
+        configStr=$( ./jq -c $(printf '.dataAdapterConfigmapForCluster[%s].clusterName="%s"' $set_index $clusterName) <<<$configStr )
+        ./jq -r '.' <<< $configStr > $json_file
+
+        ((set_index = set_index + 1))
+        echo ""
+        sleep 1
+        default="n"
+        read -r -p "$(tput setaf 10)Do you want to add another cluster? [default: $default]: $(tput sgr 0)" next_set </dev/tty
+        next_set=${next_set:-$default}
+        while [[ "$next_set" != "y" ]] && [[ "$next_set" != "n" ]]
+        do
+            read -r -p "$(tput setaf 10)Do you want to add another cluster? [default: $default]: $(tput sgr 0)" next_set </dev/tty
+            next_set=${next_set:-$default}
+        done
+        if [ "$next_set" = "n" ]; then
+            configStr=$( ./jq -c $(printf 'del(.dataAdapterConfigmapForCluster[%s:])' $set_index) <<<$configStr )
+            ./jq -r '.' <<< $configStr > $json_file
+        fi
+    done
+}
+
 get_alamedaservice_full_version()
 {
     alameda_version=`kubectl get alamedaservice --all-namespaces|grep -v 'EXECUTION'|awk '{print $4}'`
@@ -734,6 +833,12 @@ prepare_env()
     "datadogAPIKey": "",
     "datadogApplicationKey": ""
   },
+  "dataAdapterConfigmapForCluster": [
+    {
+      "scalerName": "",
+      "clusterName": ""
+    }
+  ],
   "dataAdapterConfigmapForKafka": [
     {
       "scalerName": "",
@@ -851,7 +956,7 @@ if [ "$alamedaservice_name" = "" ]; then
 fi
 
 json_file="adapter.json"
-json_file_version="v4.3.102"
+json_file_version="v4.3.103"
 json_file_template="adapter.json.tmp"
 
 prepare_env
@@ -862,12 +967,15 @@ get_general_application_info
 
 get_kafka_info
 
+get_cluster_info
+
 patch_data_adapter_secret
 
 ## No need to update configmap content for now
 #patch_data_adapter_configmap
 add_alamedascaler_for_generic_app
 add_alamedascaler_for_kafka
+add_alamedascaler_for_cluster
 
 restart_data_adapter_pod
 
