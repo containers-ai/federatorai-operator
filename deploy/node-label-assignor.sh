@@ -13,13 +13,6 @@ show_usage()
     Usage:
         -f <space> label file full path [e.g., -f /tmp/label_file]
 
-    label_file content sample:
-        1. node_name 2. node_role 3. instance_type 4. availability_zone 5. instance_id
-
-        [root@h6-110 ~]# cat /tmp/label_file
-        node7-133 master t2-medium us-west-1a i-00cd730e045190cad
-        node7-134 compute t2-medium us-west-1b i-00xe520e043235edf
-
 __EOF__
     exit 1
 }
@@ -87,7 +80,7 @@ assign_label_to_each_nodes()
         kubectl label --overwrite node $node_name beta.kubernetes.io/instance-type=$instance_type
         kubectl label --overwrite node $node_name failure-domain.beta.kubernetes.io/region=$region
         kubectl label --overwrite node $node_name failure-domain.beta.kubernetes.io/zone=$availability_zone
-        kubectl patch nodes $node_name --type merge --patch "{\"spec\":{\"providerID\": \"aws:///$availability_zone/$instance_id\"}}"
+        kubectl patch nodes $node_name --type merge --patch "{\"spec\":{\"providerID\": \"aws:///us-west-2a/$instance_id\"}}"
         echo "Done"
     done <<< "$(cat $label_file)"
 }

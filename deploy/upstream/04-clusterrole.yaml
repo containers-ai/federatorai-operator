@@ -59,6 +59,7 @@ rules:
   - ""
   resources:
   - replicationcontrollers
+  - ingresses
   verbs:
   - "*"
 - apiGroups:
@@ -246,7 +247,6 @@ rules:
   - watch
   - update
   - delete
-  - use
 - apiGroups:
   - notifying.containers.ai
   resources:

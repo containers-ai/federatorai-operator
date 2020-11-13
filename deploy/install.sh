@@ -22,7 +22,6 @@
 #   -s followed by storage_type
 #   -l followed by log_size
 #   -d followed by data_size
-#   -i followed by influxdb_size
 #   -c followed by storage_class
 #   -x followed by expose_service (y or n)
 #################################################################################################################
@@ -71,7 +70,7 @@ webhook_reminder()
 {
     if [ "$openshift_minor_version" != "" ]; then
         echo -e "\n========================================"
-        echo -e "$(tput setaf 9)Note!$(tput setaf 10) The following $(tput setaf 9)two admission plugins $(tput setaf 10)need to be enabled on $(tput setaf 9)each master node $(tput setaf 10)to make VPA Execution and Email Notification work properly."
+        echo -e "$(tput setaf 9)Note!$(tput setaf 10) Below $(tput setaf 9)two admission plugins $(tput setaf 10)needed to be enabled on $(tput setaf 9)every master nodes $(tput setaf 10)to let VPA Execution and Email Notifier working properly."
         echo -e "$(tput setaf 6)1. ValidatingAdmissionWebhook 2. MutatingAdmissionWebhook$(tput sgr 0)"
         echo -e "Steps: (On every master nodes)"
         echo -e "A. Edit /etc/origin/master/master-config.yaml"
@@ -87,7 +86,7 @@ webhook_reminder()
         echo -e "        apiVersion: v1"
         echo -e "        disable: false"
         echo -e "$(tput sgr 0)C. Save the file."
-        echo -e "D. Execute below commands to restart OpenShift API and controller:"
+        echo -e "D. Execute below commands to restart OpenShift api and controller:"
         echo -e "$(tput setaf 6)1. master-restart api 2. master-restart controllers$(tput sgr 0)"
     fi
 }
@@ -119,24 +118,6 @@ check_version()
         exit 5
     fi
 
-    oc get clusterversion 2>/dev/null|grep -vq "VERSION"
-    if [ "$?" = "0" ];then
-        # OpenShift 4.x
-        openshift_minor_version="12"
-        return 0
-    fi
-
-    oc_token="$(oc whoami token 2>/dev/null)"
-    oc_route="$(oc get route console -n openshift-console -o=jsonpath='{.status.ingress[0].host}' 2>/dev/null)"
-    if [ "$oc_token" != "" ] && [ "$oc_route" != "" ]; then
-        curl -s -k -H "Authorization: Basic ${oc_token}" https://${oc_route}:8443/version/openshift |grep -q '"minor":'
-        if [ "$?" = "0" ]; then
-            # OpenShift 3.11
-            openshift_minor_version="11"
-            return 0
-        fi
-    fi
-
     # oc major version = 3
     openshift_minor_version=`oc version 2>/dev/null|grep "oc v"|cut -d '.' -f2`
     # k8s version = 1.x
@@ -161,7 +142,7 @@ check_alameda_datahub_tag()
     namespace="$3"
 
     for ((i=0; i<$period; i+=$interval)); do
-         current_tag="`kubectl get pod -n $namespace -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[*].image | grep datahub | head -1 |awk -F'/' '{print $NF}'|cut -d ':' -f2`"
+         current_tag="`kubectl get pod -n $namespace -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[*].image | grep datahub | head -1 | cut -d ':' -f2`"
         if [ "$current_tag" = "$tag_number" ]; then
             echo -e "\ndatahub pod is running.\n"
             return 0
@@ -175,14 +156,54 @@ check_alameda_datahub_tag()
     exit 7
 }
 
+prometheus_abnormal_handle()
+{
+    default="y"
+    echo ""
+    echo "$(tput setaf 127)We found that the Prometheus in system doesn't meet Federator.ai requirement.$(tput sgr 0)"
+    echo "$(tput setaf 127)Do you want to continue Federator.ai installation?$(tput sgr 0)"
+    echo "$(tput setaf 3) y) Only Datadog integration function works.$(tput sgr 0)"
+    echo "$(tput setaf 3) n) Abort installation.$(tput sgr 0)"
+    read -r -p "$(tput setaf 127)[default: y]: $(tput sgr 0)" continue_even_abnormal </dev/tty
+    continue_even_abnormal=${continue_even_abnormal:-$default}
+
+    if [ "$continue_even_abnormal" = "n" ]; then
+        echo -e "\n$(tput setaf 1)Uninstalling Federator.ai operator...$(tput sgr 0)"
+        for yaml_fn in `ls [0-9]*.yaml | sort -nr`; do
+            echo "Deleting ${yaml_fn}..."
+            kubectl delete -f ${yaml_fn}
+        done
+        leave_prog
+        exit 8
+    else
+        set_prometheus_rule_to="n"
+    fi
+}
+
 check_prometheus_metrics()
 {
+    echo "Checking Prometheus..."
     current_operator_pod_name="`kubectl get pods -n $install_namespace |grep "federatorai-operator-"|awk '{print $1}'|head -1`"
     kubectl exec $current_operator_pod_name -n $install_namespace -- /usr/bin/federatorai-operator prom_check > /dev/null 2>&1
-    if [ "$?" != "0" ];then
-        need_prometheus_rule_patch="y"
-    else
-        need_prometheus_rule_patch="n"
+    return_state="$?"
+    echo "Return state = $return_state"
+    if [ "$return_state" = "0" ];then
+        # State = OK
+        set_prometheus_rule_to="y"
+    elif [ "$return_state" = "1" ];then
+        # State = Patchable
+        default="y"
+        read -r -p "$(tput setaf 127)Do you want to patch the Prometheus rule to meet the Federator.ai requirement? [default: y]: $(tput sgr 0)" patch_answer </dev/tty
+        patch_answer=${patch_answer:-$default}
+        if [ "$patch_answer" = "n" ]; then
+            # Need to double confirm
+            prometheus_abnormal_handle
+        else
+            set_prometheus_rule_to="y"
+        fi
+    elif [ "$return_state" = "2" ];then
+        # State = Abnormal
+        prometheus_abnormal_handle
     fi
 }
 
@@ -229,9 +250,9 @@ get_grafana_route()
         if [ "$link" != "" ] ; then
         echo -e "\n========================================"
         echo "You can now access GUI through $(tput setaf 6)https://${link} $(tput sgr 0)"
-        echo "The default login credential is $(tput setaf 6)admin/admin$(tput sgr 0)"
+        echo "Default login credential is $(tput setaf 6)admin/admin$(tput sgr 0)"
         echo -e "\nAlso, you can start to apply alamedascaler CR for the namespace you would like to monitor."
-        echo "$(tput setaf 6)Review the administration guide for further details.$(tput sgr 0)"
+        echo "$(tput setaf 6)Review administration guide for further details.$(tput sgr 0)"
         echo "========================================"
         else
             echo "Warning! Failed to obtain grafana route address."
@@ -240,9 +261,9 @@ get_grafana_route()
         if [ "$expose_service" = "y" ]; then
             echo -e "\n========================================"
             echo "You can now access GUI through $(tput setaf 6)https://<YOUR IP>:$dashboard_frontend_node_port $(tput sgr 0)"
-            echo "The default login credential is $(tput setaf 6)admin/admin$(tput sgr 0)"
+            echo "Default login credential is $(tput setaf 6)admin/admin$(tput sgr 0)"
             echo -e "\nAlso, you can start to apply alamedascaler CR for the namespace you would like to monitor."
-            echo "$(tput setaf 6)Review the administration guide for further details.$(tput sgr 0)"
+            echo "$(tput setaf 6)Review administration guide for further details.$(tput sgr 0)"
             echo "========================================"
         fi
     fi
@@ -255,7 +276,7 @@ get_restapi_route()
         if [ "$link" != "" ] ; then
         echo -e "\n========================================"
         echo "You can now access Federatorai REST API through $(tput setaf 6)https://${link} $(tput sgr 0)"
-        echo "The default login credential is $(tput setaf 6)admin/admin$(tput sgr 0)"
+        echo "Default login credential is $(tput setaf 6)admin/admin$(tput sgr 0)"
         echo "The REST API online document can be found in $(tput setaf 6)https://${link}/apis/v1/swagger/index.html $(tput sgr 0)"
         echo "========================================"
         else
@@ -265,7 +286,7 @@ get_restapi_route()
         if [ "$expose_service" = "y" ]; then
             echo -e "\n========================================"
             echo "You can now access Federatorai REST API through $(tput setaf 6)https://<YOUR IP>:$rest_api_node_port $(tput sgr 0)"
-            echo "The default login credential is $(tput setaf 6)admin/admin$(tput sgr 0)"
+            echo "Default login credential is $(tput setaf 6)admin/admin$(tput sgr 0)"
             echo "The REST API online document can be found in $(tput setaf 6)https://<YOUR IP>:$rest_api_node_port/apis/v1/swagger/index.html $(tput sgr 0)"
             echo "========================================"
         fi
@@ -299,17 +320,15 @@ get_recommended_prometheus_url()
         done<<<"$(kubectl get svc --all-namespaces --show-labels|grep -i prometheus|grep $prometheus_port |sort|head -1)"
     fi
 
-    key="`kubectl get svc $prometheus_svc_name -n $prometheus_namespace -o yaml 2>/dev/null|awk '/ selector:/{getline; print}'|cut -d ":" -f1|xargs`"
-    value="`kubectl get svc $prometheus_svc_name -n $prometheus_namespace -o yaml 2>/dev/null|awk '/ selector:/{getline; print}'|cut -d ":" -f2|xargs`"
+    key="`kubectl get svc $prometheus_svc_name -n $prometheus_namespace -o yaml|awk '/ selector:/{getline; print}'|cut -d ":" -f1|xargs`"
+    value="`kubectl get svc $prometheus_svc_name -n $prometheus_namespace -o yaml|awk '/ selector:/{getline; print}'|cut -d ":" -f2|xargs`"
 
     if [ "${key}" != "" ] && [ "${value}" != "" ]; then
         prometheus_pod_name="`kubectl get pods -l "${key}=${value}" -n $prometheus_namespace|grep -v NAME|awk '{print $1}'|grep ".*\-[0-9]$"|sort -n|head -1`"
     fi
 
     # Assign default value
-    if [ "$prometheus_svc_name" = "" ] || [ "$prometheus_namespace" = "" ]; then
-        prometheus_url="Failed to auto-discover Prometheus service"
-    elif [ "$found_none" = "y" ] && [ "$prometheus_pod_name" != "" ]; then
+    if [ "$found_none" = "y" ] && [ "$prometheus_pod_name" != "" ]; then
         prometheus_url="$prometheus_protocol://$prometheus_pod_name.$prometheus_svc_name.$prometheus_namespace:$prometheus_port"
     else
         prometheus_url="$prometheus_protocol://$prometheus_svc_name.$prometheus_namespace:$prometheus_port"
@@ -317,11 +336,8 @@ get_recommended_prometheus_url()
 }
 
 
-while getopts "t:n:e:p:s:l:d:c:x:o" o; do
+while getopts "t:n:e:p:s:l:d:c:x:" o; do
     case "${o}" in
-        o)
-            offline_mode_enabled="y"
-            ;;
         t)
             t_arg=${OPTARG}
             ;;
@@ -339,9 +355,6 @@ while getopts "t:n:e:p:s:l:d:c:x:o" o; do
             ;;
         l)
             l_arg=${OPTARG}
-            ;;
-        i)
-            i_arg=${OPTARG}
             ;;
         d)
             d_arg=${OPTARG}
@@ -366,28 +379,21 @@ done
 [ "${s_arg}" = "persistent" ] && [ "${l_arg}" = "" ] && silent_mode_disabled="y"
 [ "${s_arg}" = "persistent" ] && [ "${d_arg}" = "" ] && silent_mode_disabled="y"
 [ "${s_arg}" = "persistent" ] && [ "${c_arg}" = "" ] && silent_mode_disabled="y"
-[ "${s_arg}" = "persistent" ] && [ "${i_arg}" = "" ] && silent_mode_disabled="y"
 
-[ "${t_arg}" != "" ] && specified_tag_number="${t_arg}"
+[ "${t_arg}" != "" ] && tag_number="${t_arg}"
 [ "${n_arg}" != "" ] && install_namespace="${n_arg}"
 [ "${e_arg}" != "" ] && enable_execution="${e_arg}"
 [ "${p_arg}" != "" ] && prometheus_address="${p_arg}"
 [ "${s_arg}" != "" ] && storage_type="${s_arg}"
 [ "${l_arg}" != "" ] && log_size="${l_arg}"
-[ "${i_arg}" != "" ] && influxdb_size="${i_arg}"
 [ "${d_arg}" != "" ] && data_size="${d_arg}"
 [ "${c_arg}" != "" ] && storage_class="${c_arg}"
 [ "${x_arg}" != "" ] && expose_service="${x_arg}"
 [ "$expose_service" = "" ] && expose_service="y" # Will expose service by default if not specified
 
-if [ "$offline_mode_enabled" = "y" ] && [ "$RELATED_IMAGE_URL_PREFIX" = "" ]; then
-    echo -e "\n$(tput setaf 1)Error! Need to specify export RELATED_IMAGE_URL_PREFIX for offline installation.$(tput sgr 0)"
-    exit
-fi
-
 kubectl version|grep -q "^Server"
 if [ "$?" != "0" ];then
-    echo -e "\nPlease login to Kubernetes first."
+    echo -e "\nPlease login to kubernetes first."
     exit
 fi
 
@@ -395,32 +401,18 @@ echo "Checking environment version..."
 check_version
 echo "...Passed"
 
-if [ "$offline_mode_enabled" != "y" ]; then
-    which curl > /dev/null 2>&1
-    if [ "$?" != "0" ];then
-        echo -e "\n$(tput setaf 1)Abort, \"curl\" command is needed for this tool.$(tput sgr 0)"
-        exit
-    fi
+which curl > /dev/null 2>&1
+if [ "$?" != "0" ];then
+    echo -e "\n$(tput setaf 1)Abort, \"curl\" command is needed for this tool.$(tput sgr 0)"
+    exit
 fi
 
 previous_alameda_namespace="`kubectl get pods --all-namespaces |grep "alameda-ai-"|awk '{print $1}'|head -1`"
-previous_tag="`kubectl get pods -n $previous_alameda_namespace -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[*].image 2>/dev/null| grep datahub | head -1 |awk -F'/' '{print $NF}'| cut -d ':' -f2`"
+previous_tag="`kubectl get pods -n $previous_alameda_namespace -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[*].image 2>/dev/null| grep datahub | head -1 | cut -d ':' -f2`"
 previous_alamedaservice="`kubectl get alamedaservice -n $previous_alameda_namespace -o custom-columns=NAME:.metadata.name 2>/dev/null|grep -v NAME|head -1`"
 
 if [ "$previous_alameda_namespace" != "" ];then
     need_upgrade="y"
-    ## find value of RELATED_IMAGE_URL_PREFIX for upgrading alamedaservice CR
-    if [ "${RELATED_IMAGE_URL_PREFIX}" = "" ]; then
-        previous_imageLocation="`kubectl get alamedaservice $previous_alamedaservice -n $previous_alameda_namespace -o 'jsonpath={.spec.imageLocation}'`"
-        ## Compute previous value as RELATED_IMAGE_URL_PREFIX from federatorai-operator deployment
-        if [ "$previous_imageLocation" = "" ]; then
-            RELATED_IMAGE_URL_PREFIX="`kubectl get deployment federatorai-operator -n $previous_alameda_namespace -o yaml \
-                                       | grep -A1 'name: .*RELATED_IMAGE_' | grep 'value: ' | grep '/alameda-ai:' \
-                                       | sed -e 's|/alameda-ai:| |' | awk '{print $2}'`"
-           ## Skip RELATED_IMAGE_URL_PREFIX if it is default value
-           [ "${RELATED_IMAGE_URL_PREFIX}" = "quay.io/prophetstor" ] && RELATED_IMAGE_URL_PREFIX=""
-        fi
-    fi
 fi
 
 if [ "$silent_mode_disabled" = "y" ];then
@@ -429,13 +421,9 @@ if [ "$silent_mode_disabled" = "y" ];then
     do
         # init variables
         install_namespace=""
-        # Check if tag number is specified
-        if [ "$specified_tag_number" = "" ]; then
-            tag_number=""
-            read -r -p "$(tput setaf 2)Please input Federator.ai Operator tag:$(tput sgr 0) " tag_number </dev/tty
-        else
-            tag_number=$specified_tag_number
-        fi
+        tag_number=""
+
+        read -r -p "$(tput setaf 2)Please input Federator.ai Operator tag:$(tput sgr 0) " tag_number </dev/tty
 
         if [ "$need_upgrade" = "y" ];then
             echo -e "\n$(tput setaf 11)Previous build with tag$(tput setaf 1) $previous_tag $(tput setaf 11)detected in namespace$(tput setaf 1) $previous_alameda_namespace$(tput sgr 0)"
@@ -459,15 +447,13 @@ if [ "$silent_mode_disabled" = "y" ];then
         info_correct=${info_correct:-$default}
     done
 else
-    tag_number=$specified_tag_number
     echo -e "\n----------------------------------------"
-    echo "tag_number=$specified_tag_number"
+    echo "tag_number=$tag_number"
     echo "install_namespace=$install_namespace"
     echo "enable_execution=$enable_execution"
     echo "prometheus_address=$prometheus_address"
     echo "storage_type=$storage_type"
     echo "log_size=$log_size"
-    echo "influxdb_size=$influxdb_size"
     echo "data_size=$data_size"
     echo "storage_class=$storage_class"
     if [ "$openshift_minor_version" = "" ]; then
@@ -483,39 +469,20 @@ file_folder="/tmp/install-op"
 rm -rf $file_folder
 mkdir -p $file_folder
 current_location=`pwd`
-script_located_path=$(dirname $(readlink -f "$0"))
 cd $file_folder
 
-if [ "$offline_mode_enabled" != "y" ]; then
-    operator_files=`curl --silent https://api.github.com/repos/containers-ai/federatorai-operator/contents/deploy/upstream?ref=${tag_number} 2>&1|grep "\"name\":"|cut -d ':' -f2|cut -d '"' -f2`
-    if [ "$operator_files" = "" ]; then
-        echo -e "\n$(tput setaf 1)Abort, download operator file list failed!!!$(tput sgr 0)"
+operator_files=`curl --silent https://api.github.com/repos/containers-ai/federatorai-operator/contents/deploy/upstream?ref=${tag_number} 2>&1|grep "\"name\":"|cut -d ':' -f2|cut -d '"' -f2`
+
+for file in `echo $operator_files`
+do
+    echo "Downloading file $file ..."
+    if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/deploy/upstream/${file} -O; then
+        echo -e "\n$(tput setaf 1)Abort, download file failed!!!$(tput sgr 0)"
         echo "Please check tag name and network"
         exit 1
     fi
-
-    for file in `echo $operator_files`
-    do
-        echo "Downloading file $file ..."
-        if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/deploy/upstream/${file} -O; then
-            echo -e "\n$(tput setaf 1)Abort, download file failed!!!$(tput sgr 0)"
-            echo "Please check tag name and network"
-            exit 1
-        fi
-        echo "Done"
-    done
-else
-    # Offline Mode
-    # Copy Federator.ai operator 00-07 yamls
-    echo "Copying Federator.ai operator yamls ..."
-    if [[ "`ls ${script_located_path}/../operator/[0][0-7]*.yaml 2>/dev/null|wc -l`" -lt "8" ]]; then
-        echo -e "\n$(tput setaf 1)Error! Failed to locate all Federator.ai operator yaml files$(tput sgr 0)"
-        echo "Please make sure you extract the offline install package and execute install.sh under scripts folder  "
-        exit 1
-    fi
-    cp ${script_located_path}/../operator/[0][0-7]*.yaml .
     echo "Done"
-fi
+done
 
 # Modify federator.ai operator yaml(s)
 # for tag
@@ -537,7 +504,7 @@ sed -i "s/name: federatorai/name: ${install_namespace}/g" 00*.yaml
 sed -i "s/namespace: federatorai/namespace: ${install_namespace}/g" 01*.yaml 03*.yaml 05*.yaml 06*.yaml 07*.yaml
 
 if [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ]; then
-    sed -i -e "/image: /a\          resources:\n            limits:\n              cpu: 1000m\n              memory: 2000Mi\n            requests:\n              cpu: 100m\n              memory: 100Mi" `ls 03*.yaml`
+    sed -i -e "/image: /a\          resources:\n            limits:\n              cpu: 4000m\n              memory: 8000Mi\n            requests:\n              cpu: 100m\n              memory: 100Mi" `ls 03*.yaml`
 fi
 
 echo -e "\n$(tput setaf 2)Applying Federator.ai operator yaml files...$(tput sgr 0)"
@@ -588,69 +555,33 @@ done
 wait_until_pods_ready $max_wait_pods_ready_time 30 $install_namespace 1
 echo -e "\n$(tput setaf 6)Install Federator.ai operator $tag_number successfully$(tput sgr 0)"
 
-# Run check_prometheus_metrics only if not specified need_prometheus_rule_patch
-[ "${need_prometheus_rule_patch}" = "" ] && check_prometheus_metrics
-
-if [ "${patch_prometheus_rule}" = "" -a "${need_prometheus_rule_patch}" = "y" ]; then
-    default="y"
-    echo "$(tput setaf 127)Do you want to patch the prometheus rule to meet the Federator.ai requirement?$(tput sgr 0)"
-    read -r -p "$(tput setaf 127)Choose 'n' will abort the installation process. [default: y]: $(tput sgr 0): " patch_prometheus_rule </dev/tty
-    patch_prometheus_rule=${patch_prometheus_rule:-$default}
-fi
-
-if [ "$need_prometheus_rule_patch" = "y" ] && [ "$patch_prometheus_rule" = "n" ]; then
-    echo -e "\n$(tput setaf 1)Uninstalling Federator.ai operator...$(tput sgr 0)"
-    for yaml_fn in `ls [0-9]*.yaml | sort -nr`; do
-        echo "Deleting the yaml ${yaml_fn}..."
-        kubectl delete -f ${yaml_fn}
-    done
-    echo "Done."
-    leave_prog
-    exit 8
-fi
-
 alamedaservice_example="alamedaservice_sample.yaml"
-if [ "$offline_mode_enabled" != "y" ]; then
-    cr_files=( "alamedascaler.yaml" "alamedadetection.yaml" "alamedanotificationchannel.yaml" "alamedanotificationtopic.yaml" )
+cr_files=( "alamedascaler.yaml" "alamedadetection.yaml" "alamedanotificationchannel.yaml" "alamedanotificationtopic.yaml" )
 
-    echo -e "\nDownloading Federator.ai CR sample files ..."
-    if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/example/${alamedaservice_example} -O; then
-        echo -e "\n$(tput setaf 1)Abort, download alamedaservice sample file failed!!!$(tput sgr 0)"
-        exit 2
-    fi
-
-    for file_name in "${cr_files[@]}"
-    do
-        if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/alameda/${tag_number}/example/samples/nginx/${file_name} -O; then
-            echo -e "\n$(tput setaf 1)Abort, download $file_name sample file failed!!!$(tput sgr 0)"
-            exit 3
-        fi
-    done
-
-    echo "Done"
-else
-    # Offline Mode
-    # Copy CR yamls
-    echo "Copying Federator.ai CR yamls ..."
-    if [[ "`ls ${script_located_path}/../yamls/alameda*.yaml 2>/dev/null|wc -l`" -lt "5" ]]; then
-        echo -e "\n$(tput setaf 1)Error! Failed to locate Federator.ai CR yaml files$(tput sgr 0)"
-        echo "Please make sure you extract the offline install package and execute install.sh under scripts folder  "
-        exit 1
-    fi
-    cp ${script_located_path}/../yamls/alameda*.yaml .
-    echo "Done"
+echo -e "\nDownloading alameda CR sample files ..."
+if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/example/${alamedaservice_example} -O; then
+    echo -e "\n$(tput setaf 1)Abort, download alamedaservice sample file failed!!!$(tput sgr 0)"
+    exit 2
 fi
 
-# Specified alternative container image location
-if [ "${RELATED_IMAGE_URL_PREFIX}" != "" ]; then
-    sed -i -e "/version: latest/i\  imageLocation: ${RELATED_IMAGE_URL_PREFIX}" ${alamedaservice_example}
-fi
-# Specified version tag
+for file_name in "${cr_files[@]}"
+do
+    if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/alameda/${tag_number}/example/samples/nginx/${file_name} -O; then
+        echo -e "\n$(tput setaf 1)Abort, download $file_name sample file failed!!!$(tput sgr 0)"
+        exit 3
+    fi
+done
+
+echo "Done"
+
 sed -i "s/version: latest/version: ${tag_number}/g" ${alamedaservice_example}
 
 echo "========================================"
 
 if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
+
+    # Check prometheus support in first non silent installation mode
+    check_prometheus_metrics
 
     while [[ "$information_correct" != "y" ]] && [[ "$information_correct" != "Y" ]]
     do
@@ -659,7 +590,6 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
         prometheus_address=""
         storage_type=""
         log_size=""
-        influxdb_size=""
         data_size=""
         storage_class=""
         expose_service=""
@@ -668,12 +598,13 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
         read -r -p "$(tput setaf 127)Do you want to enable execution? [default: y]: $(tput sgr 0): " enable_execution </dev/tty
         enable_execution=${enable_execution:-$default}
 
-        get_recommended_prometheus_url
-        default="$prometheus_url"
-
-        echo "$(tput setaf 127)Enter the Prometheus service address"
-        read -r -p "[default: ${default}]: $(tput sgr 0)" prometheus_address </dev/tty
-        prometheus_address=${prometheus_address:-$default}
+        if [ "$set_prometheus_rule_to" = "y" ]; then
+            get_recommended_prometheus_url
+            default="$prometheus_url"
+            echo "$(tput setaf 127)Enter the Prometheus service address"
+            read -r -p "[default: ${default}]: $(tput sgr 0)" prometheus_address </dev/tty
+            prometheus_address=${prometheus_address:-$default}
+        fi
 
         while [[ "$storage_type" != "ephemeral" ]] && [[ "$storage_type" != "persistent" ]]
         do
@@ -690,9 +621,6 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
             default="10"
             read -r -p "$(tput setaf 127)Specify data storage size [e.g., 10 for 10GB, default: 10]: $(tput sgr 0)" data_size </dev/tty
             data_size=${data_size:-$default}
-            default="100"
-            read -r -p "$(tput setaf 127)Specify InfluxDB storage size [e.g., 100 for 100GB, default: 100]: $(tput sgr 0)" influxdb_size </dev/tty
-            influxdb_size=${influxdb_size:-$default}
 
             while [[ "$storage_class" == "" ]]
             do
@@ -703,7 +631,7 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
         if [ "$openshift_minor_version" = "" ]; then
             #k8s
             default="y"
-            read -r -p "$(tput setaf 127)Do you want to expose dashboard and REST API services for external access? [default: y]:$(tput sgr 0)" expose_service </dev/tty
+            read -r -p "$(tput setaf 127)Do you want to expose Grafana and Rest API services for external access? [default: y]:$(tput sgr 0)" expose_service </dev/tty
             expose_service=${expose_service:-$default}
         fi
 
@@ -714,12 +642,13 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
         else
             echo "enable_execution = false"
         fi
-        echo "prometheus_address = $prometheus_address"
+        if [ "$set_prometheus_rule_to" = "y" ]; then
+            echo "prometheus_address = $prometheus_address"
+        fi
         echo "storage_type = $storage_type"
         if [[ "$storage_type" == "persistent" ]]; then
             echo "log storage size = $log_size GB"
             echo "data storage size = $data_size GB"
-            echo "InfluxDB storage size = $influxdb_size GB"
             echo "storage class name = $storage_class"
         fi
         if [ "$openshift_minor_version" = "" ]; then
@@ -748,7 +677,13 @@ if [ "$need_upgrade" != "y" ]; then
         sed -i "s/\benableExecution:.*/enableExecution: false/g" ${alamedaservice_example}
     fi
 
-    sed -i "s|\bprometheusService:.*|prometheusService: ${prometheus_address}|g" ${alamedaservice_example}
+    if [ "$set_prometheus_rule_to" = "y" ]; then
+        sed -i "s|\bprometheusService:.*|prometheusService: ${prometheus_address}|g" ${alamedaservice_example}
+        sed -i "s|\bautoPatchPrometheusRules:.*|autoPatchPrometheusRules: true|g" ${alamedaservice_example}
+    else
+        sed -i "s|\bautoPatchPrometheusRules:.*|autoPatchPrometheusRules: false|g" ${alamedaservice_example}
+    fi
+
     if [[ "$storage_type" == "persistent" ]]; then
         sed -i '/- usage:/,+10d' ${alamedaservice_example}
         cat >> ${alamedaservice_example} << __EOF__
@@ -796,8 +731,8 @@ __EOF__
         cat >> ${alamedaservice_example} << __EOF__
   resources:
     limits:
-      cpu: 1000m
-      memory: 2000Mi
+      cpu: 4000m
+      memory: 8000Mi
     requests:
       cpu: 100m
       memory: 100Mi
@@ -805,80 +740,35 @@ __EOF__
     resources:
       limits:
         cpu: 8000m
-        memory: 2000Mi
+        memory: 8000Mi
       requests:
         cpu: 2000m
         memory: 1000Mi
   alamedaDatahub:
     resources:
-      limits:
-        cpu: 2000m
-        memory: 2000Mi
       requests:
-        cpu: 100m
+        cpu: 500m
         memory: 500Mi
-  alamedaNotifier:
+  alamedaInfluxdb:
     resources:
       requests:
-        cpu: 50m
-        memory: 100Mi
+        cpu: 500m
+        memory: 500Mi
   alamedaOperator:
     resources:
       requests:
-        cpu: 100m
+        cpu: 500m
         memory: 250Mi
   alamedaRabbitMQ:
     resources:
       requests:
-        cpu: 100m
+        cpu: 500m
         memory: 250Mi
-  alamedaRecommender:
+  fedemeterInfluxdb:
     resources:
-      limits:
-        cpu: 2000m
-        memory: 2000Mi
-  federatoraiRest:
-    resources:
-      requests:
-        cpu: 50m
-        memory: 100Mi
-__EOF__
-    fi
-    if [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ] && [ "$storage_type" = "persistent" ]; then
-        cat >> ${alamedaservice_example} << __EOF__
-  alamedaInfluxdb:
-    resources:
-      limits:
-        cpu: 2000m
-        memory: 4000Mi
       requests:
         cpu: 500m
         memory: 500Mi
-    storages:
-    - usage: data
-      type: pvc
-      size: ${influxdb_size}Gi
-      class: ${storage_class}
-__EOF__
-    elif [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ] && [ "$storage_type" = "ephemeral" ]; then
-        cat >> ${alamedaservice_example} << __EOF__
-  alamedaInfluxdb:
-    resources:
-      limits:
-        cpu: 2000m
-        memory: 4000Mi
-      requests:
-        cpu: 500m
-        memory: 500Mi
-__EOF__
-    elif [ "${ENABLE_RESOURCE_REQUIREMENT}" != "y" ] && [ "$storage_type" = "persistent" ]; then
-        cat >> ${alamedaservice_example} << __EOF__
-  alamedaInfluxdb:
-    storages:
-    - usage: data
-      type: pvc
-      size: ${influxdb_size}Gi
-      class: ${storage_class}
 __EOF__
     fi
 
@@ -887,14 +777,8 @@ else
     # Upgrade case, patch version to alamedaservice only
     kubectl patch alamedaservice $previous_alamedaservice -n $install_namespace --type merge --patch "{\"spec\":{\"version\": \"$tag_number\"}}"
 
-    # Specified alternative container imageLocation
-    if [ "${RELATED_IMAGE_URL_PREFIX}" != "" ]; then
-        kubectl patch alamedaservice $previous_alamedaservice -n $install_namespace --type merge --patch "{\"spec\":{\"imageLocation\": \"${RELATED_IMAGE_URL_PREFIX}\"}}"
-    fi
-
-    # Restart operator after patching alamedaservice
-    kubectl scale deployment federatorai-operator -n $install_namespace --replicas=0
-    kubectl scale deployment federatorai-operator -n $install_namespace --replicas=1
+    # Start operator after patching alamedaservice
+    kubectl patch deployment federatorai-operator -n $install_namespace -p '{"spec":{"replicas": 1}}'
 fi
 
 echo "Processing..."
@@ -908,7 +792,7 @@ fi
 
 get_grafana_route $install_namespace
 get_restapi_route $install_namespace
-echo -e "$(tput setaf 6)\nInstall Federator.ai $tag_number successfully$(tput sgr 0)"
+echo -e "$(tput setaf 6)\nInstall Alameda $tag_number successfully$(tput sgr 0)"
 leave_prog
 exit 0
 
