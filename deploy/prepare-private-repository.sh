@@ -12,8 +12,8 @@ show_usage()
 {
     cat << __EOF__
 
-    Usage: $0 [build_name] [private_repository_url]"
-    Example: $0 v4.2.614 repo.prophetstor.com/federatorai"
+    Usage: $0 [build_name] [private_repository_url]
+    Example: $0 v4.2.614 repo.prophetstor.com/federatorai
 
 __EOF__
     exit 1
