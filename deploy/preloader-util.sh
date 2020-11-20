@@ -7,7 +7,8 @@
 #       [-p] # Prepare environment
 #       [-c] # clean environment for preloader test
 #       [-e] # Enable preloader pod
-#       [-r] # Run preloader
+#       [-r] # Run preloader (normal mode: historical + current)
+#       [-o] # Run preloader (historical only)
 #       [-f future data point (hour)] # Run preloader future mode
 #       [-d] # Disable & Remove preloader
 #       [-v] # Revert environment to normal mode
@@ -29,7 +30,8 @@ show_usage()
         [-p] # Prepare environment
         [-c] # clean environment for preloader test
         [-e] # Enable preloader pod
-        [-r] # Run preloader
+        [-r] # Run preloader (normal mode: historical + current)
+        [-o] # Run preloader (historical only)
         [-f future data point (hour)] # Run preloader future mode
         [-d] # Disable & Remove preloader
         [-v] # Revert environment to normal mode
@@ -251,19 +253,57 @@ wait_for_cluster_status_data_ready()
     echo "Duration wait_for_cluster_status_data_ready = $duration" >> $debug_log
 }
 
+run_ab_test()
+{
+    echo -e "\n$(tput setaf 6)Running ab test in preloader...$(tput sgr 0)"
+
+    # Modify parameters
+    nginx_ip=$(kubectl -n $nginx_ns get svc|grep "${nginx_name}"|awk '{print $3}')
+    [ "$nginx_ip" = "" ] && echo -e "$(tput setaf 1)Error! Can't get svc ip of namespace $nginx_ns$(tput sgr 0)" && return
+
+    sed -i "s/SVC_IP=.*/SVC_IP=${nginx_ip}/g" ./$preloader_folder/generate_loads.sh
+    sed -i "s/SVC_PORT=.*/SVC_PORT=${nginx_port}/g" ./$preloader_folder/generate_loads.sh
+
+    for ab_file in "${ab_files_list[@]}"
+    do
+        kubectl cp -n $install_namespace $preloader_folder/$ab_file ${current_preloader_pod_name}:/opt/alameda/federatorai-agent/
+    done
+    # New traffic folder
+    kubectl -n $install_namespace exec $current_preloader_pod_name -- mkdir /opt/alameda/federatorai-agent/traffic
+    # trigger ab test
+    kubectl -n $install_namespace exec $current_preloader_pod_name -- bash -c "/opt/alameda/federatorai-agent/generate_loads.sh >run_output 2>run_output &"
+    if [ "$?" != "0" ]; then
+        echo -e "\n$(tput setaf 1)Error! Failed to trigger ab test inside preloader.$(tput sgr 0)"
+    fi
+    echo "Done."
+}
+
 run_preloader_command()
 {
+    running_mode="$1"
+    if [ "$running_mode" = "historical_only" ]; then
+        # Need to change data adapter to collect metrics
+        patch_data_adapter_for_preloader "false"
+    fi
+    # Move scale_down inside run_preloader_command, just in case we need to patch data adapter (historical_only mode)
+    scale_down_pods
+
     # check env is ready
     wait_for_cluster_status_data_ready
 
     start=`date +%s`
-    echo -e "\n$(tput setaf 6)Running preloader...$(tput sgr 0)"
+    echo -e "\n$(tput setaf 6)Running preloader in $running_mode mode...$(tput sgr 0)"
     get_current_preloader_name
     if [ "$current_preloader_pod_name" = "" ]; then
         echo -e "\n$(tput setaf 1)ERROR! Can't find installed preloader pod.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
+
+    if [ "$running_mode" = "historical_only" ]; then
+        kubectl exec -n $install_namespace $current_preloader_pod_name -- /opt/alameda/federatorai-agent/bin/transmitter loadhistoryonly --state=true
+    fi
+
     kubectl exec -n $install_namespace $current_preloader_pod_name -- /opt/alameda/federatorai-agent/bin/transmitter enable
     if [ "$?" != "0" ]; then
         echo -e "\n$(tput setaf 1)Error in executing preloader enable command.$(tput sgr 0)"
@@ -279,11 +319,15 @@ run_preloader_command()
         exit 5
     fi
 
+    if [ "$running_mode" = "historical_only" ]; then
+        run_ab_test
+    fi
+
     wait_until_data_pump_finish 3600 60 "historical"
     echo "Done."
     end=`date +%s`
     duration=$((end-start))
-    echo "Duration run_preloader_command = $duration" >> $debug_log
+    echo "Duration run_preloader_command in $running_mode mode = $duration" >> $debug_log
 }
 
 run_futuremode_preloader()
@@ -389,23 +433,36 @@ patch_data_adapter_for_preloader()
     only_mode="$1"
     start=`date +%s`
     echo -e "\n$(tput setaf 6)Updating data adapter (collect metadata only mode to $only_mode) for preloader...$(tput sgr 0)"
-    kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml | grep -E -q "^[[:blank:]]+collect_metadata_only = $only_mode"
-    if [ "$?" != "0" ]; then
-        if [ "$only_mode" = "true" ]; then
-            # Set collect_metadata_only = true
-            kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml |sed "s/collect_metadata_only = false/collect_metadata_only = true/g" |kubectl apply -f -
-        else
-            # Set collect_metadata_only = false
-            kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml |sed "s/collect_metadata_only = true/collect_metadata_only = false/g" |kubectl apply -f -
-        fi
 
+    kubectl get alamedaservice $alamedaservice_name -n $install_namespace -o yaml|grep "\- name: COLLECT_METADATA_ONLY" -A1|grep -q $only_mode
+    if [ "$?" != "0" ]; then
+        kubectl patch alamedaservice $alamedaservice_name -n $install_namespace --type merge --patch "{\"spec\":{\"federatoraiDataAdapter\":{\"env\":[{\"name\": \"COLLECT_METADATA_ONLY\",\"value\": \"$only_mode\"}]}}}"
         if [ "$?" != "0" ]; then
             echo -e "\n$(tput setaf 1)Error in updating data adapter to collect_metadata_only = \"$only_mode\" mode.$(tput sgr 0)"
             leave_prog
             exit 8
         fi
+        echo ""
         wait_until_pods_ready 600 30 $install_namespace 5
     fi
+
+    # kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml | grep -E -q "^[[:blank:]]+collect_metadata_only = $only_mode"
+    # if [ "$?" != "0" ]; then
+    #     if [ "$only_mode" = "true" ]; then
+    #         # Set collect_metadata_only = true
+    #         kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml |sed "s/collect_metadata_only = false/collect_metadata_only = true/g" |kubectl apply -f -
+    #     else
+    #         # Set collect_metadata_only = false
+    #         kubectl -n $install_namespace get configmap federatorai-data-adapter-config -o yaml |sed "s/collect_metadata_only = true/collect_metadata_only = false/g" |kubectl apply -f -
+    #     fi
+
+    #     if [ "$?" != "0" ]; then
+    #         echo -e "\n$(tput setaf 1)Error in updating data adapter to collect_metadata_only = \"$only_mode\" mode.$(tput sgr 0)"
+    #         leave_prog
+    #         exit 8
+    #     fi
+    #     wait_until_pods_ready 600 30 $install_namespace 5
+    # fi
 
     echo "Done."
     end=`date +%s`
@@ -640,7 +697,7 @@ new_nginx_example()
                                 "name": "${nginx_name}",
                                 "ports": [
                                     {
-                                        "containerPort": 8081,
+                                        "containerPort": ${nginx_port},
                                         "protocol": "TCP"
                                     }
                                 ],
@@ -649,12 +706,12 @@ new_nginx_example()
                                     "limits":
                                         {
                                         "cpu": "200m",
-                                        "memory": "400Mi"
+                                        "memory": "20Mi"
                                         },
                                     "requests":
                                         {
                                         "cpu": "100m",
-                                        "memory": "50Mi"
+                                        "memory": "10Mi"
                                         }
                                 },
                                 "terminationMessagePath": "/dev/termination-log"
@@ -681,9 +738,9 @@ new_nginx_example()
                 "ports": [
                     {
                         "name": "http",
-                        "port": 8081,
+                        "port": ${nginx_port},
                         "protocol": "TCP",
-                        "targetPort": 8081
+                        "targetPort": ${nginx_port}
                     }
                 ],
                 "selector": {
@@ -703,7 +760,7 @@ new_nginx_example()
             },
             "spec": {
                 "port": {
-                    "targetPort": 8081
+                    "targetPort": ${nginx_port}
                 },
                 "to": {
                     "kind": "Service",
@@ -753,12 +810,12 @@ spec:
         resources:
             limits:
                 cpu: "200m"
-                memory: "400Mi"
+                memory: "20Mi"
             requests:
                 cpu: "100m"
-                memory: "50Mi"
+                memory: "10Mi"
         ports:
-        - containerPort: 80
+        - containerPort: ${nginx_port}
       serviceAccount: ${nginx_name}
       serviceAccountName: ${nginx_name}
 ---
@@ -828,7 +885,7 @@ get_datadog_agent_info()
     dd_api_key="`kubectl get secret -n $dd_namespace $dd_api_secret_name -o jsonpath='{.data.api-key}'`"
     dd_app_key="`kubectl get secret -n $dd_namespace -o jsonpath='{range .items[*]}{.data.app-key}'`"
     dd_cluster_agent_deploy_name="$(kubectl get deploy -n $dd_namespace |grep -v NAME|awk '{print $1}'|grep "cluster-agent$")"
-    dd_cluster_name="$(kubectl get deploy $dd_cluster_agent_deploy_name -n $dd_namespace 2>/dev/null -o jsonpath='{range .spec.template.spec.containers[*]}{.env[?(@.name=="DD_CLUSTER_NAME")].value}')"
+    dd_cluster_name="$(kubectl get deploy $dd_cluster_agent_deploy_name -n $dd_namespace -o jsonpath='{range .spec.template.spec.containers[*]}{.env[?(@.name=="DD_CLUSTER_NAME")].value}' 2>/dev/null | awk '{print $1}')"
 }
 
 add_dd_tags_to_executor_env()
@@ -942,14 +999,20 @@ cleanup_influxdb_preloader_related_contents()
     
     measurement_list="`kubectl exec $influxdb_pod_name -n $install_namespace -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_metric -execute "show measurements" 2>&1 |tail -n+4`"
     echo "db=alameda_metric"
+    # prepare sql command
+    m_list=""
     for measurement in `echo $measurement_list`
     do
         if [ "$measurement" = "grafana_config" ]; then
             continue
         fi
-        echo "clean up measurement: $measurement"
-        kubectl exec $influxdb_pod_name -n $install_namespace -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_metric -execute "drop measurement $measurement"
+        m_list="${m_list} ${measurement}"
+        sql_cmd="${sql_cmd};drop measurement $measurement"
     done
+    if [ "${m_list}" != "" ]; then
+        echo "cleaning up measurements: ${m_list}"
+        kubectl exec $influxdb_pod_name -n $install_namespace -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_metric -execute "${sql_cmd}" | grep -v "^$"
+    fi
     
     echo "Done."
     end=`date +%s`
@@ -1023,7 +1086,7 @@ switch_alameda_executor_in_alamedaservice()
         leave_prog
         exit 8
     elif [ "$current_executor_pod_name" != "" ] && [ "$switch_option" = "off" ]; then
-        echo -e "\n$(tput setaf 1)ERROR! Executor pod still exists.$(tput sgr 0)"
+        echo -e "\n$(tput setaf 1)ERROR! Executor pod still exists as $current_executor_pod_name.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
@@ -1079,7 +1142,7 @@ add_svc_for_nginx()
         echo -e "\n$(tput setaf 6)Adding svc for NGINX ...$(tput sgr 0)"
 
         # Check if svc already exist
-        kubectl get svc nginx-svc -n $nginx_ns &>/dev/null
+        kubectl get svc ${nginx_name} -n $nginx_ns &>/dev/null
         if [ "$?" = "0" ]; then
             echo "svc already exists in namespace $nginx_ns"
             echo "Done"
@@ -1091,16 +1154,16 @@ add_svc_for_nginx()
 apiVersion: v1
 kind: Service
 metadata:
-  name: nginx-svc
+  name: ${nginx_name}
   namespace: ${nginx_ns}
   labels:
-    app: nginx-svc
+    app: ${nginx_name}
 spec:
   type: NodePort
   ports:
-  - port: 80
+  - port: ${nginx_port}
     nodePort: 31020
-    targetPort: 80
+    targetPort: ${nginx_port}
     protocol: TCP
     name: http
   selector:
@@ -1150,17 +1213,6 @@ disable_preloader_in_alamedaservice()
     echo "Duration disable_preloader_in_alamedaservice = $duration" >> $debug_log
 }
 
-get_cluster_name()
-{
-    cluster_name=`kubectl get cm cluster-info -n default -o yaml 2>/dev/null|grep uid|awk '{print $2}'`
-    if [ "$cluster_name" = "" ];then
-        cluster_name=`kubectl get cm cluster-info -n kube-public -o yaml 2>/dev/null|grep uid|awk '{print $2}'`
-        if [ "$cluster_name" = "" ];then
-            cluster_name=`kubectl get cm cluster-info -n kube-service-catalog’ -o yaml 2>/dev/null|grep uid|awk '{print $2}'`
-        fi
-    fi
-}
-
 clean_environment_operations()
 {
     cleanup_influxdb_preloader_related_contents
@@ -1173,7 +1225,7 @@ if [ "$#" -eq "0" ]; then
     exit
 fi
 
-while getopts "f:n:t:x:cdehikprv" o; do
+while getopts "f:n:t:x:cdehikprvo" o; do
     case "${o}" in
         p)
             prepare_environment="y"
@@ -1191,7 +1243,10 @@ while getopts "f:n:t:x:cdehikprv" o; do
             enable_preloader="y"
             ;;
         r)
-            run_preloader="y"
+            run_preloader_with_normal_mode="y"
+            ;;
+        o)
+            run_preloader_with_historical_only="y"
             ;;
         f)
             future_mode_enabled="y"
@@ -1235,6 +1290,11 @@ if [ "$future_mode_enabled" = "y" ]; then
         ''|*[!0-9]*) echo -e "\n$(tput setaf 1)future mode length (hour) needs to be an integer.$(tput sgr 0)" && show_usage ;;
         *) ;;
     esac
+fi
+
+if [ "$run_preloader_with_normal_mode" = "y" ] && [ "$run_preloader_with_historical_only" = "y" ]; then
+    echo -e "\n$(tput setaf 1)Error! You can specify either the '-r' or the '-o' parameter, but not both." && show_usage
+    exit 3
 fi
 
 if [ "$replica_num_specified" = "y" ]; then
@@ -1303,6 +1363,13 @@ fi
 
 file_folder="/tmp/preloader"
 nginx_ns="nginx-preloader-sample"
+if [ "$openshift_minor_version" = "" ]; then
+    # K8S
+    nginx_port="80"
+else
+    # OpenShift
+    nginx_port="8081"
+fi
 alamedascaler_name="nginx-alamedascaler"
 
 debug_log="debug.log"
@@ -1310,6 +1377,26 @@ debug_log="debug.log"
 rm -rf $file_folder
 mkdir -p $file_folder
 current_location=`pwd`
+# copy preloader ab files if run historical only mode enabled
+preloader_folder="preloader_ab_runner"
+if [ "$run_preloader_with_historical_only" = "y" ]; then
+    # Check folder exists
+    [ ! -d "$preloader_folder" ] && echo -e "$(tput setaf 1)Error! Can't locate $preloader_folder folder.$(tput sgr 0)" && exit 3
+
+    ab_files_list=("define.py" "generate_loads.sh" "generate_traffic1.py" "run_ab.py" "transaction.txt")
+    for ab_file in "${ab_files_list[@]}"
+    do
+        # Check files exist
+        [ ! -f "$preloader_folder/$ab_file" ] && echo -e "$(tput setaf 1)Error! Can't locate file ($preloader_folder/$ab_file).$(tput sgr 0)" && exit 3
+    done
+
+    cp -r $preloader_folder $file_folder
+    if [ "$?" != "0" ]; then
+        echo -e "\n$(tput setaf 1)Error! Can't copy folder $preloader_folder to $file_folder"
+        exit 3
+    fi
+fi
+
 cd $file_folder
 echo "Receiving command '$0 $@'" >> $debug_log
 
@@ -1328,6 +1415,7 @@ fi
 if [ "$prepare_environment" = "y" ]; then
     delete_all_alamedascaler
     new_nginx_example
+    add_svc_for_nginx
     patch_datahub_for_preloader
     patch_grafana_for_preloader
     patch_data_adapter_for_preloader "true"
@@ -1347,9 +1435,15 @@ if [ "$enable_preloader" = "y" ]; then
     enable_preloader_in_alamedaservice
 fi
 
-if [ "$run_preloader" = "y" ]; then
-    scale_down_pods
-    run_preloader_command
+if [ "$run_preloader_with_normal_mode" = "y" ] || [ "$run_preloader_with_historical_only" = "y" ]; then
+    # Move scale_down_pods into run_preloader_command method
+    #scale_down_pods
+    if [ "$run_preloader_with_normal_mode" = "y" ]; then
+        run_preloader_command "normal"
+    else
+        # run_preloader_with_historical_only = "y"
+        run_preloader_command "historical_only"
+    fi
     verify_metrics_exist
     scale_up_pods
     #check_prediction_status
@@ -1361,11 +1455,15 @@ if [ "$future_mode_enabled" = "y" ]; then
 fi
 
 if [ "$disable_preloader" = "y" ]; then
+    # scale up if any failure encounter previously or program abort
+    scale_up_pods
     switch_alameda_executor_in_alamedaservice "off"
     disable_preloader_in_alamedaservice
 fi
 
 if [ "$revert_environment" = "y" ]; then
+    # scale up if any failure encounter previously or program abort
+    scale_up_pods
     delete_all_alamedascaler
     delete_nginx_example
     patch_datahub_back_to_normal
