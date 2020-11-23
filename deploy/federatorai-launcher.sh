@@ -165,21 +165,23 @@ download_files()
         exit 1
     fi
 
-    # Download preloader ab runnder folder
-    ab_folder_name="preloader_ab_runner"
-    mkdir -p $ab_folder_name
+    if [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -ge "3" ]; then
+        # Download preloader ab runnder folder
+        ab_folder_name="preloader_ab_runner"
+        mkdir -p $ab_folder_name
 
-    ab_file_lists=`curl --silent https://api.github.com/repos/containers-ai/federatorai-operator/contents/deploy/${ab_folder_name}?ref=${tag_number} 2>&1|grep "\"name\":"|cut -d ':' -f2|cut -d '"' -f2`
-    if [ "$ab_file_lists" = "" ]; then
-        echo -e "\n$(tput setaf 3)Warning, download Federator.ai preloader ab files list failed!!!$(tput sgr 0)"
-    fi
-
-    for file in `echo $ab_file_lists`
-    do
-        if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/deploy/${ab_folder_name}/${file} -o $ab_folder_name/${file}; then
-            echo -e "\n$(tput setaf 3)Warning, download Federator.ai preloader ab file \"${file}\" failed!!!$(tput sgr 0)"
+        ab_file_lists=`curl --silent https://api.github.com/repos/containers-ai/federatorai-operator/contents/deploy/${ab_folder_name}?ref=${tag_number} 2>&1|grep "\"name\":"|cut -d ':' -f2|cut -d '"' -f2`
+        if [ "$ab_file_lists" = "" ]; then
+            echo -e "\n$(tput setaf 3)Warning, download Federator.ai preloader ab files list failed!!!$(tput sgr 0)"
         fi
-    done
+
+        for file in `echo $ab_file_lists`
+        do
+            if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/deploy/${ab_folder_name}/${file} -o $ab_folder_name/${file}; then
+                echo -e "\n$(tput setaf 3)Warning, download Federator.ai preloader ab file \"${file}\" failed!!!$(tput sgr 0)"
+            fi
+        done
+    fi
 
     cd - > /dev/null
 
