@@ -162,7 +162,7 @@ while getopts "h-:" o; do
 done
 
 ## Global variables
-image_list="alameda-admission-ubi alameda-ai-dispatcher alameda-ai alameda-analyzer-ubi alameda-datahub-ubi alameda-evictioner-ubi alameda-executor-ubi alameda-grafana alameda-influxdb alameda-notifier-ubi alameda-operator-ubi alameda-rabbitmq alameda-recommender-ubi fedemeter-api-ubi fedemeter-influxdb federatorai-agent-app federatorai-agent-gpu federatorai-agent-preloader federatorai-agent-ubi federatorai-dashboard-backend federatorai-dashboard-frontend federatorai-operator-ubi federatorai-rest-ubi"
+image_list="alameda-admission-ubi alameda-ai-dispatcher alameda-ai alameda-analyzer-ubi alameda-datahub-ubi alameda-evictioner-ubi alameda-executor-ubi alameda-grafana alameda-influxdb alameda-notifier-ubi alameda-operator-ubi alameda-rabbitmq alameda-recommender-ubi fedemeter-api-ubi fedemeter-influxdb federatorai-agent-app federatorai-agent-preloader federatorai-agent-ubi federatorai-dashboard-backend federatorai-dashboard-frontend federatorai-operator-ubi federatorai-rest-ubi"
 script_output="execution_output_`date +%s`.log"
 if [ "$source_repo_url" = "" ]; then
     original_url_prefix="quay.io/prophetstor"
