@@ -693,7 +693,7 @@ new_nginx_example()
                         "containers": [
                             {
                                 "image": "twalter/openshift-nginx:stable-alpine",
-                                "imagePullPolicy": "Always",
+                                "imagePullPolicy": "IfNotPresent",
                                 "name": "${nginx_name}",
                                 "ports": [
                                     {
