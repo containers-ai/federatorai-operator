@@ -914,9 +914,9 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
 
         while [[ "$storage_type" != "ephemeral" ]] && [[ "$storage_type" != "persistent" ]]
         do
-            default="ephemeral"
+            default="persistent"
             echo "$(tput setaf 127)Which storage type you would like to use? ephemeral or persistent?"
-            read -r -p "[default: ephemeral]: $(tput sgr 0)" storage_type </dev/tty
+            read -r -p "[default: $default]: $(tput sgr 0)" storage_type </dev/tty
             storage_type=${storage_type:-$default}
         done
 
@@ -991,10 +991,14 @@ if [ "$need_upgrade" != "y" ]; then
       type: pvc
       size: ${log_size}Gi
       class: ${storage_class}
+      accessModes:
+        - ReadWriteOnce
     - usage: data
       type: pvc
       size: ${data_size}Gi
       class: ${storage_class}
+      accessModes:
+        - ReadWriteOnce
 
 __EOF__
     fi
@@ -1083,6 +1087,8 @@ __EOF__
       type: pvc
       size: ${influxdb_size}Gi
       class: ${storage_class}
+      accessModes:
+        - ReadWriteOnce
 __EOF__
     elif [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ] && [ "$storage_type" = "ephemeral" ]; then
         cat >> ${alamedaservice_example} << __EOF__
@@ -1100,6 +1106,8 @@ __EOF__
       type: pvc
       size: ${influxdb_size}Gi
       class: ${storage_class}
+      accessModes:
+        - ReadWriteOnce
 __EOF__
     fi
 

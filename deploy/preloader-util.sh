@@ -8,7 +8,7 @@
 #       [-c] # clean environment for preloader test
 #       [-e] # Enable preloader pod
 #       [-r] # Run preloader (normal mode: historical + current)
-#       [-o] # Run preloader (historical only)
+#       [-o] # Run preloader (historical + ab test)
 #       [-f future data point (hour)] # Run preloader future mode
 #       [-d] # Disable & Remove preloader
 #       [-v] # Revert environment to normal mode
@@ -18,7 +18,6 @@
 #       [-i] # Install Nginx
 #       [-k] # Remove Nginx
 #       [-t replica number] # Nginx default replica number (default:10) [e.g., -t 5]
-#       [-s enable execution] # Enable(default) or disable execution [e.g., -s false]
 #
 #################################################################################################################
 
@@ -31,7 +30,7 @@ show_usage()
         [-c] # clean environment for preloader test
         [-e] # Enable preloader pod
         [-r] # Run preloader (normal mode: historical + current)
-        [-o] # Run preloader (historical only)
+        [-o] # Run preloader (historical + ab test)
         [-f future data point (hour)] # Run preloader future mode
         [-d] # Disable & Remove preloader
         [-v] # Revert environment to normal mode
@@ -41,7 +40,6 @@ show_usage()
         [-i] # Install Nginx
         [-k] # Remove Nginx
         [-t replica number] # Nginx default replica number (default:10) [e.g., -t 5]
-        [-s enable execution] # Enable(default) or disable execution [e.g., -s false]
 
 __EOF__
     exit 1
@@ -1047,6 +1045,30 @@ check_prediction_status()
     echo "Duration check_prediction_status() = $duration" >> $debug_log
 }
 
+check_deployment_status()
+{
+    period="$1"
+    interval="$2"
+    deploy_name="$3"
+    deploy_status_expected="$4"
+
+    for ((i=0; i<$period; i+=$interval)); do
+        kubectl -n $namespace get deploy $deploy_name >/dev/null 2>&1
+        if [ "$?" = "0" ] && [ "$deploy_status_expected" = "on" ]; then
+            echo -e "Depolyment $deploy_name exists."
+            return 0
+        elif [ "$?" != "0" ] && [ "$deploy_status_expected" = "off" ]; then
+            echo -e "Depolyment $deploy_name is gone."
+            return 0
+        fi
+        echo "Waiting for deployment $deploy_name become expected status ($deploy_status_expected)..."
+        sleep "$interval"
+    done
+    echo -e "\n$(tput setaf 1)Error!! Waited for $period seconds, but deployment $deploy_name status is not ($deploy_status_expected).$(tput sgr 0)"
+    leave_prog
+    exit 7
+}
+
 switch_alameda_executor_in_alamedaservice()
 {
     start=`date +%s`
@@ -1063,6 +1085,7 @@ switch_alameda_executor_in_alamedaservice()
             exit 8
         fi
         modified="y"
+        check_deployment_status 180 10 "alameda-executor" "on"
     elif [ "$current_executor_pod_name" != "" ] && [ "$switch_option" = "off" ]; then
         # Turn off
         echo -e "\n$(tput setaf 6)Disable executor in alamedaservice...$(tput sgr 0)"
@@ -1073,6 +1096,7 @@ switch_alameda_executor_in_alamedaservice()
             exit 8
         fi
         modified="y"
+        check_deployment_status 180 10 "alameda-executor" "off"
     fi
 
     if [ "$modified" = "y" ]; then
@@ -1120,6 +1144,7 @@ enable_preloader_in_alamedaservice()
         fi
     fi
     # Check if preloader is ready
+    check_deployment_status 180 10 "federatorai-agent-preloader" "on"
     echo ""
     wait_until_pods_ready 600 30 $install_namespace 5
     get_current_preloader_name
@@ -1198,6 +1223,7 @@ disable_preloader_in_alamedaservice()
         fi
 
         # Check if preloader is removed and other pods are ready
+        check_deployment_status 180 10 "federatorai-agent-preloader" "off"
         echo ""
         wait_until_pods_ready 600 30 $install_namespace 5
         get_current_preloader_name
@@ -1256,10 +1282,10 @@ while getopts "f:n:t:x:cdehikprvo" o; do
             replica_num_specified="y"
             t_arg=${OPTARG}
             ;;
-        s)
-            enable_execution_specified="y"
-            s_arg=${OPTARG}
-            ;;
+        # s)
+        #     enable_execution_specified="y"
+        #     s_arg=${OPTARG}
+        #     ;;
         # x)
         #     autoscaling_specified="y"
         #     x_arg=${OPTARG}
@@ -1306,15 +1332,6 @@ if [ "$replica_num_specified" = "y" ]; then
 else
     # default replica
     replica_number="5"
-fi
-
-if [ "$enable_execution_specified" = "y" ]; then
-    enable_execution=$s_arg
-    if [ "$enable_execution" != "true" ] && [ "$enable_execution" != "false" ]; then
-        echo -e "\n$(tput setaf 1) Enable execution value needs to be \"true\" or \"false\".$(tput sgr 0)" && show_usage
-    fi
-else
-    enable_execution="true"
 fi
 
 # if [ "$autoscaling_specified" = "y" ]; then
@@ -1420,8 +1437,6 @@ if [ "$prepare_environment" = "y" ]; then
     patch_grafana_for_preloader
     patch_data_adapter_for_preloader "true"
     check_influxdb_retention
-    add_alamedascaler_for_nginx
-    add_dd_tags_to_executor_env
 fi
 
 if [ "$clean_environment" = "y" ]; then
@@ -1429,9 +1444,6 @@ if [ "$clean_environment" = "y" ]; then
 fi
 
 if [ "$enable_preloader" = "y" ]; then
-    if [ "$enable_execution" = "true" ]; then
-        switch_alameda_executor_in_alamedaservice "on"
-    fi
     enable_preloader_in_alamedaservice
 fi
 
@@ -1439,9 +1451,15 @@ if [ "$run_preloader_with_normal_mode" = "y" ] || [ "$run_preloader_with_histori
     # Move scale_down_pods into run_preloader_command method
     #scale_down_pods
     if [ "$run_preloader_with_normal_mode" = "y" ]; then
+        enable_execution="true"
+        add_alamedascaler_for_nginx
+        switch_alameda_executor_in_alamedaservice "on"
+        add_dd_tags_to_executor_env
         run_preloader_command "normal"
     else
         # run_preloader_with_historical_only = "y"
+        enable_execution="false"
+        add_alamedascaler_for_nginx
         run_preloader_command "historical_only"
     fi
     verify_metrics_exist
