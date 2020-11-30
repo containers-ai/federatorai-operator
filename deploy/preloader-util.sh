@@ -1053,7 +1053,7 @@ check_deployment_status()
     deploy_status_expected="$4"
 
     for ((i=0; i<$period; i+=$interval)); do
-        kubectl -n $namespace get deploy $deploy_name >/dev/null 2>&1
+        kubectl -n $install_namespace get deploy $deploy_name >/dev/null 2>&1
         if [ "$?" = "0" ] && [ "$deploy_status_expected" = "on" ]; then
             echo -e "Depolyment $deploy_name exists."
             return 0
