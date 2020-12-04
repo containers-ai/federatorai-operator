@@ -17,9 +17,9 @@
 #   Standalone options:
 #       [-i] # Install Nginx
 #       [-k] # Remove Nginx
-#       [-b] # Retrigger ab test from preload pod
+#       [-b] # Retrigger ab test inside preloader pod
 #       [-g ab_traffic_ratio] # ab test traffic ratio (default:4000) [e.g., -g 4000]
-#       [-t replica number] # Nginx default replica number (default:10) [e.g., -t 5]
+#       [-t replica number] # Nginx default replica number (default:5) [e.g., -t 5]
 #
 #################################################################################################################
 
@@ -41,9 +41,9 @@ show_usage()
     Standalone options:
         [-i] # Install Nginx
         [-k] # Remove Nginx
-        [-b] # Retrigger ab test from preload pod
+        [-b] # Retrigger ab test inside preloader pod
         [-g ab_traffic_ratio] # ab test traffic ratio (default:4000) [e.g., -g 4000]
-        [-t replica number] # Nginx default replica number (default:10) [e.g., -t 5]
+        [-t replica number] # Nginx default replica number (default:5) [e.g., -t 5]
 
 __EOF__
     exit 1

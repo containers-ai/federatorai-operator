@@ -16,6 +16,7 @@ show_usage()
           Requirements:
             --namespace <space> target namespace name [e.g., --namespace nginx]
             --controller-name <space> controller name [e.g., --controller-name nginx-ex]
+            --login-password <space> GUI login password [e.g., --login-password abc123]
           Operations:
             --get-current-controller-resources
             --get-controller-planning
@@ -24,6 +25,7 @@ show_usage()
         Scenario B (For Namespace Quotas):
           Requirements:
             --namespace <space> target namespace name [e.g., --namespace nginx]
+            --login-password <space> GUI login password [e.g., --login-password abc123]
           Operations:
             --get-current-namespace-quotas
             --get-namespace-planning
@@ -203,7 +205,13 @@ rest_api_login()
     echo -e "\n$(tput setaf 6)Logging into REST API...$(tput sgr 0)"
     check_api_url
     #echo "curl -sS -k -X POST \"$api_url/apis/v1/users/login\" -H \"accept: application/json\" -H \"authorization: Basic YWRtaW46YWRtaW4=\" |jq '.accessToken'|tr -d \"\"\""
-    access_token=`curl -sS -k -X POST "$api_url/apis/v1/users/login" -H "accept: application/json" -H "authorization: Basic YWRtaW46YWRtaW4=" |jq '.accessToken'|tr -d "\""`
+    auth_string="admin:${admin_password}"
+    auth_cipher=$(echo -n "$auth_string"|base64)
+    if [ "$auth_cipher" = "" ]; then
+        echo -e "\n$(tput setaf 1)Error! Failed to generate base64 output of login string.$(tput sgr 0)"
+        exit 8
+    fi
+    access_token=$(curl -sS -k -X POST "$api_url/apis/v1/users/login" -H "accept: application/json" -H "authorization: Basic ${auth_cipher}" |jq '.accessToken'|tr -d "\"")
     check_user_token
 
     echo "Done."
@@ -223,8 +231,8 @@ check_api_url()
 
 check_user_token()
 {
-    if [ "$access_token" = "" ]; then
-        echo -e "\n$(tput setaf 1)Error! The user token is empty.$(tput sgr 0)"
+    if [ "$access_token" = "null" ]; then
+        echo -e "\n$(tput setaf 1)Error! Failed to get login token from REST API.$(tput sgr 0)"
         leave_prog
         exit 8
     fi
@@ -717,6 +725,14 @@ while getopts "h-:" o; do
                         exit
                     fi
                     ;;
+                login-password)
+                    admin_password="${!OPTIND}"; OPTIND=$(( $OPTIND + 1 ))
+                    if [ "$admin_password" = "" ]; then
+                        echo -e "\n$(tput setaf 1)Error! Missing --${OPTARG} value$(tput sgr 0)"
+                        show_usage
+                        exit
+                    fi
+                    ;;
                 get-current-pod-resources)
                     should_get_current_pod_resources="y"
                     ;;
@@ -774,6 +790,12 @@ while getopts "h-:" o; do
     esac
 done
 
+if [ "$admin_password" = "" ]; then
+    echo -e "\n$(tput setaf 1)Error! You need to specify GUI admin password using '--login-password' option$(tput sgr 0)"
+    show_usage
+    exit 5
+fi
+
 if [ "$should_get_pod_planning" != "" ] && [ "$should_get_controller_planning" != "" ]; then
     echo -e "\n$(tput setaf 1)Error! Can only choose either --get-pod-planning or --get-controller-planning option$(tput sgr 0)"
     exit 5
@@ -828,6 +850,12 @@ fi
 which curl > /dev/null 2>&1
 if [ "$?" != "0" ];then
     echo -e "\n$(tput setaf 1)Abort, \"curl\" command is needed for this tool.$(tput sgr 0)"
+    exit
+fi
+
+which base64 > /dev/null 2>&1
+if [ "$?" != "0" ];then
+    echo -e "\n$(tput setaf 1)Abort, \"base64\" command is needed for this tool.$(tput sgr 0)"
     exit
 fi
 
