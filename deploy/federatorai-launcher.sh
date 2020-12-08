@@ -141,9 +141,19 @@ download_files()
         # >= 4.4
         scriptarray=("${scriptarray[@]}" "cluster-property-setup.sh")
     elif [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "3" ]; then
-        if [ "$tag_last_digit" -gt "1006" ] || [ "$tag_last_digit" = "datadog" ]; then
-            # (= 4.3 and > 1006) or (= 4.3 and = datadog)
-            scriptarray=("${scriptarray[@]}" "cluster-property-setup.sh")
+        re='^[0-9]+$'
+        if [[ $tag_last_digit =~ $re ]] ; then
+            # tag_last_digit is a number
+            if [ "$tag_last_digit" -gt "1006" ]; then
+                # (= 4.3 and > 1006)
+                scriptarray=("${scriptarray[@]}" "cluster-property-setup.sh")
+            fi
+        else
+            # tag_last_digit not a number
+            if [ "$tag_last_digit" = "datadog" ]; then
+                # (= 4.3 and = datadog)
+                scriptarray=("${scriptarray[@]}" "cluster-property-setup.sh")
+            fi
         fi
     fi
 
@@ -275,9 +285,13 @@ go_interactive()
         ask_push_image
         if [ "$push_image" = "y" ]; then
             old_build="n"
-            if [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "2" ] && [ "$tag_last_digit" -lt "759" ]; then
-                # < 4.2.759
-                old_build="y"
+            re='^[0-9]+$'
+            if [[ $tag_last_digit =~ $re ]] ; then
+                # tag_last_digit is a number
+                if [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "2" ] && [ "$tag_last_digit" -lt "759" ]; then
+                    # < 4.2.759
+                    old_build="y"
+                fi
             fi
 
             if [ "$old_build" = "n" ]; then
@@ -318,10 +332,14 @@ prepare_media()
     mkdir -p $image_folder
     cd $image_folder
 
-    if [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "2" ] && [ "$tag_last_digit" -lt "759" ]; then
-        # < 4.2.759
-        echo -e "\n$(tput setaf 1)Abort, --prepare_media only support build version greater than v4.2.758$(tput sgr 0)"
-        exit 3
+    re='^[0-9]+$'
+    if [[ $tag_last_digit =~ $re ]] ; then
+        # tag_last_digit is a number
+        if [ "$tag_first_digit" -eq "4" ] && [ "$tag_middle_digit" -eq "2" ] && [ "$tag_last_digit" -lt "759" ]; then
+            # < 4.2.759
+            echo -e "\n$(tput setaf 1)Abort, --prepare_media only support build version greater than v4.2.758$(tput sgr 0)"
+            exit 3
+        fi
     fi
 
     if [ "$source_repo_url" != "" ]; then
