@@ -255,6 +255,35 @@ wait_for_cluster_status_data_ready()
     echo "Duration wait_for_cluster_status_data_ready = $duration" >> $debug_log
 }
 
+refine_preloader_variables_with_alamedaservice()
+{
+    ## Assign preloader environment variables
+    local _env_list=""
+    if [ "${PRELOADER_PRELOAD_MONTH}" != "" ]; then
+        echo -e "\nSetting variable PRELOADER_PRELOAD_MONTH='${PRELOADER_PRELOAD_MONTH}'"
+        _env_list="${_env_list}
+    - name: PRELOADER_PRELOADER_PRELOAD_MONTH
+      value: \"${PRELOADER_PRELOAD_MONTH}\"  # unit is sec, history preloaded data granularity
+"
+    fi
+    if [ "${_env_list}" != "" ]; then
+        patch_data="
+spec:
+  federatoraiAgentPreloader:
+    env:${_env_list}
+"
+        echo -e "\nPatching alamedaservice for enabling environment variables of preloader ..."
+        kubectl patch alamedaservice ${alamedaservice_name} -n ${install_namespace} --type merge --patch "${patch_data}"
+        if [ "$?" != "0" ]; then
+            echo -e "\n$(tput setaf 1)Error! Failed in patching AlamedaService.$(tput sgr 0)"
+            exit 1
+        fi
+        # restart preloader pod
+        get_current_preloader_name
+        [ "${current_preloader_pod_name}" != "" ] && kubectl -n $install_namespace delete pod $current_preloader_pod_name --wait=true
+    fi
+}
+
 run_ab_test()
 {
     echo -e "\n$(tput setaf 6)Running ab test in preloader...$(tput sgr 0)"
@@ -270,9 +299,9 @@ run_ab_test()
     nginx_ip=$(kubectl -n $nginx_ns get svc|grep "${nginx_name}"|awk '{print $3}')
     [ "$nginx_ip" = "" ] && echo -e "$(tput setaf 1)Error! Can't get svc ip of namespace $nginx_ns$(tput sgr 0)" && return
 
-    sed -i "s/SVC_IP=.*/SVC_IP=${nginx_ip}/g" ./$preloader_folder/generate_loads.sh
-    sed -i "s/SVC_PORT=.*/SVC_PORT=${nginx_port}/g" ./$preloader_folder/generate_loads.sh
-    sed -i "s/traffic_ratio.*/traffic_ratio = ${traffic_ratio}/g" ./$preloader_folder/define.py
+    sed -i "s/SVC_IP=.*/SVC_IP=${nginx_ip}/g" $preloader_folder/generate_loads.sh
+    sed -i "s/SVC_PORT=.*/SVC_PORT=${nginx_port}/g" $preloader_folder/generate_loads.sh
+    sed -i "s/traffic_ratio.*/traffic_ratio = ${traffic_ratio}/g" $preloader_folder/define.py
 
     for ab_file in "${ab_files_list[@]}"
     do
@@ -1136,6 +1165,10 @@ switch_alameda_executor_in_alamedaservice()
 enable_preloader_in_alamedaservice()
 {
     start=`date +%s`
+
+    # Refine variables before running preloader
+    refine_preloader_variables_with_alamedaservice
+
     get_current_preloader_name
     if [ "$current_preloader_pod_name" != "" ]; then
         echo -e "\n$(tput setaf 6)Skip preloader installation due to preloader pod exists.$(tput sgr 0)"
@@ -1434,7 +1467,7 @@ rm -rf $file_folder
 mkdir -p $file_folder
 current_location=`pwd`
 # copy preloader ab files if run historical only mode enabled
-preloader_folder="preloader_ab_runner"
+preloader_folder="$(dirname $0)/preloader_ab_runner"
 if [ "$run_preloader_with_historical_only" = "y" ] || [ "$run_ab_from_preloader" = "y" ]; then
     # Check folder exists
     [ ! -d "$preloader_folder" ] && echo -e "$(tput setaf 1)Error! Can't locate $preloader_folder folder.$(tput sgr 0)" && exit 3
