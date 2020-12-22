@@ -14,6 +14,8 @@
 #       [-v] # Revert environment to normal mode
 #       [-n nginx_prefix_name] # Specify nginx prefix name (optional)
 #       [-h] # Display script usage
+#   Optional:
+#       [-s nginx_namespace] # Specify nginx namespace
 #   Standalone options:
 #       [-i] # Install Nginx
 #       [-k] # Remove Nginx
@@ -35,6 +37,8 @@ show_usage()
         [-v] # Revert environment to normal mode
         [-n nginx_prefix_name] # Specify nginx prefix name (optional)
         [-h] # Display script usage
+    Optional:
+        [-s nginx_namespace] # Specify nginx namespace
     Standalone options:
         [-i] # Install Nginx
         [-k] # Remove Nginx
@@ -212,8 +216,35 @@ delete_all_alamedascaler()
     echo "Duration delete_all_alamedascaler = $duration" >> $debug_log
 }
 
+wait_for_cluster_status_data_ready()
+{
+    start=`date +%s`
+    echo -e "\n$(tput setaf 6)Checking cluster status...$(tput sgr 0)"
+    influxdb_pod_name="`kubectl get pods -n $install_namespace |grep "alameda-influxdb-"|awk '{print $1}'|head -1`"
+    repeat_count="30"
+    sleep_interval="20"
+    for i in $(seq 1 $repeat_count)
+    do
+        kubectl exec $influxdb_pod_name -n $install_namespace -- influx -ssl -unsafeSsl -precision rfc3339 -username admin -password adminpass -database alameda_cluster_status -execute "select * from pod" 2>/dev/null |grep -q "nginx-app"
+        if [ "$?" != 0 ]; then
+            echo "Not ready, keep retrying cluster status..."
+            sleep $sleep_interval
+        else
+            break
+        fi
+    done
+
+    echo "Done."
+    end=`date +%s`
+    duration=$((end-start))
+    echo "Duration wait_for_cluster_status_data_ready = $duration" >> $debug_log
+}
+
 run_preloader_command()
 {
+    # check env is ready
+    wait_for_cluster_status_data_ready
+
     start=`date +%s`
     echo -e "\n$(tput setaf 6)Running preloader...$(tput sgr 0)"
     get_current_preloader_name
@@ -275,6 +306,8 @@ scale_down_pods()
 {
     echo -e "\n$(tput setaf 6)Scaling down alameda-ai and alameda-ai-dispatcher ...$(tput sgr 0)"
     original_alameda_ai_replicas="`kubectl get deploy alameda-ai -n $install_namespace -o jsonpath='{.spec.replicas}'`"
+    # Bring down federatorai-operator to prevent it start scale down pods automatically
+    kubectl patch deployment federatorai-operator -n $install_namespace -p '{"spec":{"replicas": 0}}'
     kubectl patch deployment alameda-ai -n $install_namespace -p '{"spec":{"replicas": 0}}'
     kubectl patch deployment alameda-ai-dispatcher -n $install_namespace -p '{"spec":{"replicas": 0}}'
     kubectl patch deployment alameda-recommender -n $install_namespace -p '{"spec":{"replicas": 0}}'
@@ -300,6 +333,11 @@ scale_up_pods()
 
     if [ "`kubectl get deploy alameda-recommender -n $install_namespace -o jsonpath='{.spec.replicas}'`" -eq "0" ]; then
         kubectl patch deployment alameda-recommender -n $install_namespace -p '{"spec":{"replicas": 1}}'
+        do_something="y"
+    fi
+
+    if [ "`kubectl get deploy federatorai-operator -n $install_namespace -o jsonpath='{.spec.replicas}'`" -eq "0" ]; then
+        kubectl patch deployment federatorai-operator -n $install_namespace -p '{"spec":{"replicas": 1}}'
         do_something="y"
     fi
 
@@ -495,7 +533,7 @@ new_nginx_example()
     echo -e "\n$(tput setaf 6)Creating new NGINX sample pod ...$(tput sgr 0)"
 
     if [[ "`kubectl get po -n $nginx_ns 2>/dev/null|grep -v "NAME"|grep "Running"|wc -l`" -gt "0" ]]; then
-        echo "nginx-preloader-sample namespace and pod are already exist."
+        echo "$nginx_ns namespace and pod are already exist."
     else
         if [ "$openshift_minor_version" != "" ]; then
             # OpenShift
@@ -544,7 +582,7 @@ new_nginx_example()
                             {
                                 "image": "twalter/openshift-nginx:stable-alpine",
                                 "imagePullPolicy": "Always",
-                                "name": "nginx",
+                                "name": "${nginx_name}",
                                 "ports": [
                                     {
                                         "containerPort": 8081,
@@ -666,6 +704,39 @@ spec:
                 memory: "50Mi"
         ports:
         - containerPort: 80
+      serviceAccount: ${nginx_name}
+      serviceAccountName: ${nginx_name}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${nginx_name}
+rules:
+- apiGroups:
+  - policy
+  resources:
+  - podsecuritypolicies
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${nginx_name}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ${nginx_name}
+subjects:
+- kind: ServiceAccount
+  name: ${nginx_name}
+  namespace: ${nginx_ns}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${nginx_name}
+  namespace: ${nginx_ns}
 __EOF__
             kubectl create ns $nginx_ns
             kubectl apply -f $nginx_k8s_yaml
@@ -934,7 +1005,7 @@ if [ "$#" -eq "0" ]; then
     exit
 fi
 
-while getopts "f:x:ecpvrdhikn:" o; do
+while getopts "f:x:s:ecpvrdhikn:" o; do
     case "${o}" in
         p)
             prepare_environment="y"
@@ -961,6 +1032,10 @@ while getopts "f:x:ecpvrdhikn:" o; do
         x)
             autoscaling_specified="y"
             x_arg=${OPTARG}
+            ;;
+        s)
+            nginx_namespace_specified="y"
+            s_arg=${OPTARG}
             ;;
         n)
             nginx_name_specified="y"
@@ -1009,6 +1084,12 @@ else
     nginx_name="nginx-prepared"
 fi
 
+if [ "$nginx_namespace_specified" = "y" ]; then
+    nginx_ns=$s_arg
+else
+    nginx_ns="nginx-preloader-sample"
+fi
+
 kubectl version|grep -q "^Server"
 if [ "$?" != "0" ];then
     echo -e "\nPlease login to kubernetes first."
@@ -1034,8 +1115,6 @@ if [ "$alamedaservice_name" = "" ]; then
 fi
 
 file_folder="/tmp/preloader"
-nginx_ns="nginx-preloader-sample"
-
 debug_log="debug.log"
 
 rm -rf $file_folder

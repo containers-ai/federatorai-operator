@@ -22,6 +22,7 @@
 #   -s followed by storage_type
 #   -l followed by log_size
 #   -d followed by data_size
+#   -i followed by influxdb_size
 #   -c followed by storage_class
 #   -x followed by expose_service (y or n)
 #################################################################################################################
@@ -70,7 +71,7 @@ webhook_reminder()
 {
     if [ "$openshift_minor_version" != "" ]; then
         echo -e "\n========================================"
-        echo -e "$(tput setaf 9)Note!$(tput setaf 10) Below $(tput setaf 9)two admission plugins $(tput setaf 10)needed to be enabled on $(tput setaf 9)every master nodes $(tput setaf 10)to let VPA Execution and Email Notifier working properly."
+        echo -e "$(tput setaf 9)Note!$(tput setaf 10) The following $(tput setaf 9)two admission plugins $(tput setaf 10)need to be enabled on $(tput setaf 9)each master node $(tput setaf 10)to make VPA Execution and Email Notification work properly."
         echo -e "$(tput setaf 6)1. ValidatingAdmissionWebhook 2. MutatingAdmissionWebhook$(tput sgr 0)"
         echo -e "Steps: (On every master nodes)"
         echo -e "A. Edit /etc/origin/master/master-config.yaml"
@@ -316,6 +317,9 @@ while getopts "t:n:e:p:s:l:d:c:x:" o; do
         l)
             l_arg=${OPTARG}
             ;;
+        i)
+            i_arg=${OPTARG}
+            ;;
         d)
             d_arg=${OPTARG}
             ;;
@@ -339,13 +343,15 @@ done
 [ "${s_arg}" = "persistent" ] && [ "${l_arg}" = "" ] && silent_mode_disabled="y"
 [ "${s_arg}" = "persistent" ] && [ "${d_arg}" = "" ] && silent_mode_disabled="y"
 [ "${s_arg}" = "persistent" ] && [ "${c_arg}" = "" ] && silent_mode_disabled="y"
+[ "${s_arg}" = "persistent" ] && [ "${i_arg}" = "" ] && silent_mode_disabled="y"
 
-[ "${t_arg}" != "" ] && tag_number="${t_arg}"
+[ "${t_arg}" != "" ] && specified_tag_number="${t_arg}"
 [ "${n_arg}" != "" ] && install_namespace="${n_arg}"
 [ "${e_arg}" != "" ] && enable_execution="${e_arg}"
 [ "${p_arg}" != "" ] && prometheus_address="${p_arg}"
 [ "${s_arg}" != "" ] && storage_type="${s_arg}"
 [ "${l_arg}" != "" ] && log_size="${l_arg}"
+[ "${i_arg}" != "" ] && influxdb_size="${i_arg}"
 [ "${d_arg}" != "" ] && data_size="${d_arg}"
 [ "${c_arg}" != "" ] && storage_class="${c_arg}"
 [ "${x_arg}" != "" ] && expose_service="${x_arg}"
@@ -373,6 +379,18 @@ previous_alamedaservice="`kubectl get alamedaservice -n $previous_alameda_namesp
 
 if [ "$previous_alameda_namespace" != "" ];then
     need_upgrade="y"
+    ## find value of RELATED_IMAGE_URL_PREFIX for upgrading alamedaservice CR
+    if [ "${RELATED_IMAGE_URL_PREFIX}" = "" ]; then
+        previous_imageLocation="`kubectl get alamedaservice $previous_alamedaservice -n $previous_alameda_namespace -o 'jsonpath={.spec.imageLocation}'`"
+        ## Compute previous value as RELATED_IMAGE_URL_PREFIX from federatorai-operator deployment
+        if [ "$previous_imageLocation" = "" ]; then
+            RELATED_IMAGE_URL_PREFIX="`kubectl get deployment federatorai-operator -n $previous_alameda_namespace -o yaml \
+                                       | grep -A1 'name: .*RELATED_IMAGE_' | grep 'value: ' | grep '/alameda-ai:' \
+                                       | sed -e 's|/alameda-ai:| |' | awk '{print $2}'`"
+           ## Skip RELATED_IMAGE_URL_PREFIX if it is default value
+           [ "${RELATED_IMAGE_URL_PREFIX}" = "quay.io/prophetstor" ] && RELATED_IMAGE_URL_PREFIX=""
+        fi
+    fi
 fi
 
 if [ "$silent_mode_disabled" = "y" ];then
@@ -381,9 +399,13 @@ if [ "$silent_mode_disabled" = "y" ];then
     do
         # init variables
         install_namespace=""
-        tag_number=""
-
-        read -r -p "$(tput setaf 2)Please input Federator.ai Operator tag:$(tput sgr 0) " tag_number </dev/tty
+        # Check if tag number is specified
+        if [ "$specified_tag_number" = "" ]; then
+            tag_number=""
+            read -r -p "$(tput setaf 2)Please input Federator.ai Operator tag:$(tput sgr 0) " tag_number </dev/tty
+        else
+            tag_number=$specified_tag_number
+        fi
 
         if [ "$need_upgrade" = "y" ];then
             echo -e "\n$(tput setaf 11)Previous build with tag$(tput setaf 1) $previous_tag $(tput setaf 11)detected in namespace$(tput setaf 1) $previous_alameda_namespace$(tput sgr 0)"
@@ -407,13 +429,15 @@ if [ "$silent_mode_disabled" = "y" ];then
         info_correct=${info_correct:-$default}
     done
 else
+    tag_number=$specified_tag_number
     echo -e "\n----------------------------------------"
-    echo "tag_number=$tag_number"
+    echo "tag_number=$specified_tag_number"
     echo "install_namespace=$install_namespace"
     echo "enable_execution=$enable_execution"
     echo "prometheus_address=$prometheus_address"
     echo "storage_type=$storage_type"
     echo "log_size=$log_size"
+    echo "influxdb_size=$influxdb_size"
     echo "data_size=$data_size"
     echo "storage_class=$storage_class"
     if [ "$openshift_minor_version" = "" ]; then
@@ -432,6 +456,11 @@ current_location=`pwd`
 cd $file_folder
 
 operator_files=`curl --silent https://api.github.com/repos/containers-ai/federatorai-operator/contents/deploy/upstream?ref=${tag_number} 2>&1|grep "\"name\":"|cut -d ':' -f2|cut -d '"' -f2`
+if [ "$operator_files" = "" ]; then
+    echo -e "\n$(tput setaf 1)Abort, download operator file list failed!!!$(tput sgr 0)"
+    echo "Please check tag name and network"
+    exit 1
+fi
 
 for file in `echo $operator_files`
 do
@@ -462,6 +491,10 @@ fi
 # for namespace
 sed -i "s/name: federatorai/name: ${install_namespace}/g" 00*.yaml
 sed -i "s/namespace: federatorai/namespace: ${install_namespace}/g" 01*.yaml 03*.yaml 05*.yaml 06*.yaml 07*.yaml
+
+if [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ]; then
+    sed -i -e "/image: /a\          resources:\n            limits:\n              cpu: 1000m\n              memory: 2000Mi\n            requests:\n              cpu: 100m\n              memory: 100Mi" `ls 03*.yaml`
+fi
 
 echo -e "\n$(tput setaf 2)Applying Federator.ai operator yaml files...$(tput sgr 0)"
 
@@ -524,9 +557,10 @@ fi
 if [ "$need_prometheus_rule_patch" = "y" ] && [ "$patch_prometheus_rule" = "n" ]; then
     echo -e "\n$(tput setaf 1)Uninstalling Federator.ai operator...$(tput sgr 0)"
     for yaml_fn in `ls [0-9]*.yaml | sort -nr`; do
-        echo "Deletiabort the installationng ${yaml_fn}..."
+        echo "Deleting the yaml ${yaml_fn}..."
         kubectl delete -f ${yaml_fn}
     done
+    echo "Done."
     leave_prog
     exit 8
 fi
@@ -534,7 +568,7 @@ fi
 alamedaservice_example="alamedaservice_sample.yaml"
 cr_files=( "alamedascaler.yaml" "alamedadetection.yaml" "alamedanotificationchannel.yaml" "alamedanotificationtopic.yaml" )
 
-echo -e "\nDownloading alameda CR sample files ..."
+echo -e "\nDownloading Federator.ai CR sample files ..."
 if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/example/${alamedaservice_example} -O; then
     echo -e "\n$(tput setaf 1)Abort, download alamedaservice sample file failed!!!$(tput sgr 0)"
     exit 2
@@ -550,6 +584,11 @@ done
 
 echo "Done"
 
+# Specified alternative container image location
+if [ "${RELATED_IMAGE_URL_PREFIX}" != "" ]; then
+    sed -i -e "/version: latest/i\  imageLocation: ${RELATED_IMAGE_URL_PREFIX}" ${alamedaservice_example}
+fi
+# Specified version tag
 sed -i "s/version: latest/version: ${tag_number}/g" ${alamedaservice_example}
 
 echo "========================================"
@@ -563,6 +602,7 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
         prometheus_address=""
         storage_type=""
         log_size=""
+        influxdb_size=""
         data_size=""
         storage_class=""
         expose_service=""
@@ -593,6 +633,9 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
             default="10"
             read -r -p "$(tput setaf 127)Specify data storage size [e.g., 10 for 10GB, default: 10]: $(tput sgr 0)" data_size </dev/tty
             data_size=${data_size:-$default}
+            default="100"
+            read -r -p "$(tput setaf 127)Specify InfluxDB storage size [e.g., 100 for 100GB, default: 100]: $(tput sgr 0)" influxdb_size </dev/tty
+            influxdb_size=${influxdb_size:-$default}
 
             while [[ "$storage_class" == "" ]]
             do
@@ -603,7 +646,7 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
         if [ "$openshift_minor_version" = "" ]; then
             #k8s
             default="y"
-            read -r -p "$(tput setaf 127)Do you want to expose Grafana and Rest API services for external access? [default: y]:$(tput sgr 0)" expose_service </dev/tty
+            read -r -p "$(tput setaf 127)Do you want to expose dashboard and REST API services for external access? [default: y]:$(tput sgr 0)" expose_service </dev/tty
             expose_service=${expose_service:-$default}
         fi
 
@@ -619,6 +662,7 @@ if [ "$silent_mode_disabled" = "y" ] && [ "$need_upgrade" != "y" ];then
         if [[ "$storage_type" == "persistent" ]]; then
             echo "log storage size = $log_size GB"
             echo "data storage size = $data_size GB"
+            echo "InfluxDB storage size = $influxdb_size GB"
             echo "storage class name = $storage_class"
         fi
         if [ "$openshift_minor_version" = "" ]; then
@@ -690,13 +734,110 @@ __EOF__
         fi
     fi
 
+    # Enable resource requirement configuration
+    if [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ]; then
+        cat >> ${alamedaservice_example} << __EOF__
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2000Mi
+    requests:
+      cpu: 100m
+      memory: 100Mi
+  alamedaAi:
+    resources:
+      limits:
+        cpu: 8000m
+        memory: 2000Mi
+      requests:
+        cpu: 2000m
+        memory: 1000Mi
+  alamedaDatahub:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2000Mi
+      requests:
+        cpu: 100m
+        memory: 500Mi
+  alamedaNotifier:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 100Mi
+  alamedaOperator:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 250Mi
+  alamedaRabbitMQ:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 250Mi
+  alamedaRecommender:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2000Mi
+  federatoraiRest:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 100Mi
+__EOF__
+    fi
+    if [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ] && [ "$storage_type" = "persistent" ]; then
+        cat >> ${alamedaservice_example} << __EOF__
+  alamedaInfluxdb:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4000Mi
+      requests:
+        cpu: 500m
+        memory: 500Mi
+    storages:
+    - usage: data
+      type: pvc
+      size: ${influxdb_size}Gi
+      class: ${storage_class}
+__EOF__
+    elif [ "${ENABLE_RESOURCE_REQUIREMENT}" = "y" ] && [ "$storage_type" = "ephemeral" ]; then
+        cat >> ${alamedaservice_example} << __EOF__
+  alamedaInfluxdb:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4000Mi
+      requests:
+        cpu: 500m
+        memory: 500Mi
+__EOF__
+    elif [ "${ENABLE_RESOURCE_REQUIREMENT}" != "y" ] && [ "$storage_type" = "persistent" ]; then
+        cat >> ${alamedaservice_example} << __EOF__
+  alamedaInfluxdb:
+    storages:
+    - usage: data
+      type: pvc
+      size: ${influxdb_size}Gi
+      class: ${storage_class}
+__EOF__
+    fi
+
     kubectl apply -f $alamedaservice_example &>/dev/null
 else
     # Upgrade case, patch version to alamedaservice only
     kubectl patch alamedaservice $previous_alamedaservice -n $install_namespace --type merge --patch "{\"spec\":{\"version\": \"$tag_number\"}}"
 
-    # Start operator after patching alamedaservice
-    kubectl patch deployment federatorai-operator -n $install_namespace -p '{"spec":{"replicas": 1}}'
+    # Specified alternative container imageLocation
+    if [ "${RELATED_IMAGE_URL_PREFIX}" != "" ]; then
+        kubectl patch alamedaservice $previous_alamedaservice -n $install_namespace --type merge --patch "{\"spec\":{\"imageLocation\": \"${RELATED_IMAGE_URL_PREFIX}\"}}"
+    fi
+
+    # Restart operator after patching alamedaservice
+    kubectl scale deployment federatorai-operator -n $install_namespace --replicas=0
+    kubectl scale deployment federatorai-operator -n $install_namespace --replicas=1
 fi
 
 echo "Processing..."
@@ -710,7 +851,7 @@ fi
 
 get_grafana_route $install_namespace
 get_restapi_route $install_namespace
-echo -e "$(tput setaf 6)\nInstall Alameda $tag_number successfully$(tput sgr 0)"
+echo -e "$(tput setaf 6)\nInstall Federator.ai $tag_number successfully$(tput sgr 0)"
 leave_prog
 exit 0
 

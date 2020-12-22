@@ -16,9 +16,7 @@ remove_containersai_crds()
 
 remove_all_alamedaservice()
 {
-    alamedaservice_list=`kubectl get alamedaservice --all-namespaces -o name 2>/dev/null`
-
-    kubectl get alamedaservice --all-namespaces|grep -v NAMESPACE|while read ns servicename extra
+    kubectl get alamedaservice --all-namespaces 2>/dev/null|grep -v NAMESPACE|while read ns servicename extra
     do
         echo -e "$(tput setaf 2)\nDeleting $servicename in $ns namespace...$(tput sgr 0)"
         #kubectl delete alamedaservice $servicename -n $ns
@@ -43,31 +41,21 @@ download_operator_yaml_if_needed()
 
     for file in `echo $operator_files`
     do
-        if [ ! -f "$file" ]; then
-            echo "Downloading file $file ..."
-            if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/deploy/upstream/${file} -O; then
-                echo -e "\n$(tput setaf 1)Abort, download file failed!!!$(tput sgr 0)"
-                echo "Please check tag name and network"
-                #exit 1
-            fi
+        echo "Downloading file $file ..."
+        if ! curl -sL --fail https://raw.githubusercontent.com/containers-ai/federatorai-operator/${tag_number}/deploy/upstream/${file} -O; then
+            echo -e "\n$(tput setaf 1)Abort, download file failed!!!$(tput sgr 0)"
+            echo "Please check tag name and network"
+            exit 1
         fi
     done
 
     tag_without_v="${tag_number:1}"
 
     if [ "$installed_namespace" != "" ]; then
-        if [ $(parse_version $tag_without_v) -ge $(parse_version "4.2.272") ] && [ $(parse_version $tag_without_v) -le $(parse_version "4.2.275") ]; then
-            sed -i "s/ubi:latest/ubi:${tag_number}/g" 05*.yaml
-            # for namespace
-            sed -i "s/name: federatorai/name: ${installed_namespace}/g" 00*.yaml
-            sed -i "s/federatorai/${installed_namespace}/g" 04*.yaml
-            sed -i "s/namespace: federatorai/namespace: ${installed_namespace}/g" 01*.yaml 05*.yaml 07*.yaml 08*.yaml 09*.yaml
-        else
-            sed -i "s/ubi:latest/ubi:${tag_number}/g" 03*.yaml
-            # for namespace
-            sed -i "s/name: federatorai/name: ${installed_namespace}/g" 00*.yaml
-            sed -i "s/namespace: federatorai/namespace: ${installed_namespace}/g" 01*.yaml 03*.yaml 05*.yaml 06*.yaml 07*.yaml
-        fi
+        sed -i "s/ubi:.*/ubi:${tag_number}/g" 03*.yaml
+        # for namespace
+        sed -i "s/name:.*/name: ${installed_namespace}/g" 00*.yaml
+        sed -i "s/namespace:.*/namespace: ${installed_namespace}/g" 01*.yaml 03*.yaml 05*.yaml 06*.yaml 07*.yaml
     fi
 
 }
@@ -114,7 +102,8 @@ if [ "$?" != "0" ];then
     exit
 fi
 
-file_folder="/tmp/install-op"
+file_folder="/tmp/uninstall-op"
+rm -rf $file_folder
 mkdir -p $file_folder
 current_location=`pwd`
 cd $file_folder
@@ -139,7 +128,11 @@ do
     info_correct=${info_correct:-$default}
 done
 
-installed_namespace=`kubectl get pods --all-namespaces|grep "federatorai-operator"|awk '{print $1}'`
+installed_namespace="`kubectl get deployment --all-namespaces|grep "federatorai-operator"|awk '{print $1}'`"
+if [ "$installed_namespace" = "" ]; then
+    echo -e "\nInstalled_namespace is empty. Federator.ai operator doesn't exist in system."
+    exit
+fi
 
 download_operator_yaml_if_needed
 

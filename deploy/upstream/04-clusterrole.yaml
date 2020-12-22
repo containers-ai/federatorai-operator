@@ -18,6 +18,7 @@ rules:
   - "*"
 - apiGroups:
   - autoscaling.containers.ai
+  - tenant.containers.ai
   - analysis.containers.ai
   resources:
   - "*"
@@ -59,7 +60,6 @@ rules:
   - ""
   resources:
   - replicationcontrollers
-  - ingresses
   verbs:
   - "*"
 - apiGroups:
@@ -139,6 +139,7 @@ rules:
   - delete
   - get
   - update
+  - list
 - apiGroups:
   - admissionregistration.k8s.io
   resources:
@@ -247,6 +248,7 @@ rules:
   - watch
   - update
   - delete
+  - use
 - apiGroups:
   - notifying.containers.ai
   resources:
