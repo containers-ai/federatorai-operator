@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: federatorai-operator
+  namespace: federatorai
+  labels:
+    name: federatorai-operator
+    app: Federator.ai
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      name: federatorai-operator
+  template:
+    metadata:
+      labels:
+        name: federatorai-operator
+        app: Federator.ai
+    spec:
+      serviceAccountName: federatorai-operator
+      initContainers:
+        - name: upgrader
+          image: quay.io/prophetstor/federatorai-operator-ubi:latest
+          command:
+          - federatorai-operator
+          args:
+          - "upgrade"
+          - "influxdb"
+          volumeMounts:
+          - mountPath: /var/log/alameda
+            name: log
+      containers:
+        - name: federatorai-operator
+          # Replace this with the built image name
+          image: quay.io/prophetstor/federatorai-operator-ubi:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          - federatorai-operator
+          env:
+            - name: NAMESPACE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+#            - name: FEDERATORAI_OPERATOR_WATCH_NAMESPACE
+#              valueFrom:
+#                fieldRef:
+#                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPERATOR_NAME
+              value: "federatorai-operator"
+            - name: DISABLE_OPERAND_RESOURCE_PROTECTION
+              value: "true" 
+            - name: RELATED_IMAGE_ADMISSION_CONTROLLER
+              value: quay.io/prophetstor/alameda-admission-ubi:latest
+            - name: RELATED_IMAGE_AI_DISPATCHER
+              value: quay.io/prophetstor/alameda-ai-dispatcher:latest
+            - name: RELATED_IMAGE_AI_ENGINE
+              value: quay.io/prophetstor/alameda-ai:latest
+            - name: RELATED_IMAGE_ANALYZER
+              value: quay.io/prophetstor/alameda-analyzer-ubi:latest
+            - name: RELATED_IMAGE_DATAHUB
+              value: quay.io/prophetstor/alameda-datahub-ubi:latest
+            - name: RELATED_IMAGE_EVICTIONER
+              value: quay.io/prophetstor/alameda-evictioner-ubi:latest
+            - name: RELATED_IMAGE_EXECUTOR
+              value: quay.io/prophetstor/alameda-executor-ubi:latest
+            - name: RELATED_IMAGE_FEDEMETER_API
+              value: quay.io/prophetstor/fedemeter-api-ubi:latest
+            - name: RELATED_IMAGE_FEDEMETER_INFLUXDB
+              value: quay.io/prophetstor/fedemeter-influxdb:latest
+            - name: RELATED_IMAGE_FEDERATORAI_AGENT
+              value: quay.io/prophetstor/federatorai-agent-ubi:latest
+            - name: RELATED_IMAGE_FEDERATORAI_AGENT_APP
+              value: quay.io/prophetstor/federatorai-agent-app:latest
+            - name: RELATED_IMAGE_FEDERATORAI_AGENT_GPU
+              value: quay.io/prophetstor/federatorai-agent-gpu:latest
+            - name: RELATED_IMAGE_FEDERATORAI_AGENT_PRELOADER
+              value: quay.io/prophetstor/federatorai-agent-preloader:latest
+            - name: RELATED_IMAGE_FEDERATORAI_DASHBOARD_FRONTEND
+              value: quay.io/prophetstor/federatorai-dashboard-frontend:latest
+            - name: RELATED_IMAGE_FEDERATORAI_DASHBOARD_BACKEND
+              value: quay.io/prophetstor/federatorai-dashboard-backend:latest
+            - name: RELATED_IMAGE_FEDERATORAI_RESTAPI
+              value: quay.io/prophetstor/federatorai-rest-ubi:latest
+            - name: RELATED_IMAGE_GRAFANA
+              value: quay.io/prophetstor/alameda-grafana:latest
+            - name: RELATED_IMAGE_INFLUXDB
+              value: quay.io/prophetstor/alameda-influxdb:latest
+            - name: RELATED_IMAGE_NOTIFIER
+              value: quay.io/prophetstor/alameda-notifier-ubi:latest
+            - name: RELATED_IMAGE_OPERATOR
+              value: quay.io/prophetstor/alameda-operator-ubi:latest
+            - name: RELATED_IMAGE_RABBITMQ
+              value: quay.io/prophetstor/alameda-rabbitmq:latest
+            - name: RELATED_IMAGE_RECOMMENDER
+              value: quay.io/prophetstor/alameda-recommender-ubi:latest
+          volumeMounts:
+          - mountPath: /var/log/alameda
+            name: log
+      volumes:
+        - name: log
+          emptyDir: {}
