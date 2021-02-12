@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: federatorai-operator
+  namespace: federatorai
+  labels:
+    name: federatorai-operator
+    app: Federator.ai
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      name: federatorai-operator
+  template:
+    metadata:
+      labels:
+        name: federatorai-operator
+        app: Federator.ai
+    spec:
+      serviceAccountName: federatorai-operator
+      containers:
+        - name: federatorai-operator
+          # Replace this with the built image name
+          image: quay.io/prophetstor/federatorai-operator-ubi:latest
+          imagePullPolicy: Always
+          command:
+          - federatorai-operator
+          env:
+            - name: NAMESPACE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+#            - name: FEDERATORAI_OPERATOR_WATCH_NAMESPACE
+#              valueFrom:
+#                fieldRef:
+#                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPERATOR_NAME
+              value: "federatorai-operator"
+            - name: DISABLE_OPERAND_RESOURCE_PROTECTION
+              value: "true" 
+
